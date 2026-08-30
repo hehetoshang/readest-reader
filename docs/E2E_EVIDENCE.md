@@ -39,7 +39,7 @@ The automation performed these observable phases (only sanitized fields retained
 {"phase":"server-connected","path":"/shelf"}
 {"phase":"session-authenticated","path":"/shelf"}
 {"phase":"book-open-command","source":"real-epub","via":"moke-tauri-ipc"}
-{"phase":"reader-rendered","path":"/readest/reader","textLength":142,"viewerCount":1}
+{"phase":"reader-rendered","chapterMarker":"chapter-prose","path":"/readest/reader","textLength":12883,"viewerCount":3}
 {"phase":"error-observed","code":"progress.network","operation":"progress.save","retryable":true}
 {"phase":"e2e-complete","connection":true,"realEpubOpened":true,"chapterRendered":true,"errorObservable":true}
 ```
