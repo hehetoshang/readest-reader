@@ -6,8 +6,8 @@ import { useEnv } from '@/context/EnvContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import { useSettingsStore } from '@/store/settingsStore';
 import { eventDispatcher } from '@/utils/event';
-import { KOSyncClient } from '@/services/sync/KOSyncClient';
-import { KOSyncChecksumMethod, KOSyncStrategy } from '@/types/settings';
+import { BookOrbitClient } from '@/services/bookorbit/BookOrbitClient';
+import { KOSyncStrategy } from '@/types/settings';
 import { debounce } from '@/utils/debounce';
 import { getOSPlatform } from '@/utils/misc';
 import {
@@ -16,26 +16,28 @@ import {
   parseCustomHeadersInput,
 } from '@/utils/customHeaders';
 import SubPageHeader from '../SubPageHeader';
-import { SectionTitle, SettingLabel, SettingsSelect } from '../primitives';
+import { SectionTitle, SettingLabel, SettingsSelect, SettingsSwitchRow, Tips } from '../primitives';
 import { Toggle } from '@/components/primitives/toggle';
 
-interface KOSyncFormProps {
+interface BookOrbitFormProps {
   onBack: () => void;
 }
 
-const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
+type BookOrbitToggleField = 'syncProgress' | 'syncNotes' | 'syncStats' | 'syncBookStates';
+
+const BookOrbitForm: React.FC<BookOrbitFormProps> = ({ onBack }) => {
   const _ = useTranslation();
   const { settings, setSettings, saveSettings } = useSettingsStore();
   const { envConfig, appService } = useEnv();
 
-  const [url, setUrl] = useState(settings.kosync.serverUrl || '');
-  const [username, setUsername] = useState(settings.kosync.username || '');
+  const [url, setUrl] = useState(settings.bookorbit.serverUrl || '');
+  const [username, setUsername] = useState(settings.bookorbit.username || '');
   const [password, setPassword] = useState('');
   const [isConnecting, setIsConnecting] = useState(false);
   const [deviceName, setDeviceName] = useState('');
   const [osName, setOsName] = useState('');
   const [customHeadersInput, setCustomHeadersInput] = useState(
-    formatCustomHeadersInput(settings.kosync.customHeaders),
+    formatCustomHeadersInput(settings.bookorbit.customHeaders),
   );
   const [headerError, setHeaderError] = useState('');
 
@@ -64,17 +66,17 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
 
   useEffect(() => {
     const defaultName = osName ? `Readest (${osName})` : 'Readest';
-    setDeviceName(settings.kosync.deviceName || defaultName);
-  }, [settings.kosync.deviceName, osName]);
+    setDeviceName(settings.bookorbit.deviceName || defaultName);
+  }, [settings.bookorbit.deviceName, osName]);
 
-  const isConfigured = useMemo(() => !!settings.kosync.userkey, [settings.kosync.userkey]);
+  const isConfigured = useMemo(() => !!settings.bookorbit.userkey, [settings.bookorbit.userkey]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const debouncedSaveDeviceName = useCallback(
     debounce((newDeviceName: string) => {
       const newSettings = {
         ...settings,
-        kosync: { ...settings.kosync, deviceName: newDeviceName },
+        bookorbit: { ...settings.bookorbit, deviceName: newDeviceName },
       };
       setSettings(newSettings);
       saveSettings(envConfig, newSettings);
@@ -97,11 +99,11 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
         return;
       }
       setHeaderError('');
-      const kosync = {
-        ...settings.kosync,
+      const bookorbit = {
+        ...settings.bookorbit,
         customHeaders: hasCustomHeaders(parsed.headers) ? parsed.headers : undefined,
       };
-      const newSettings = { ...settings, kosync };
+      const newSettings = { ...settings, bookorbit };
       setSettings(newSettings);
       saveSettings(envConfig, newSettings);
     }, 500),
@@ -123,7 +125,7 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
     setHeaderError('');
     setIsConnecting(true);
     const config = {
-      ...settings.kosync,
+      ...settings.bookorbit,
       serverUrl: url,
       username,
       userkey: md5(password),
@@ -132,13 +134,16 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
       customHeaders: hasCustomHeaders(parsedHeaders.headers) ? parsedHeaders.headers : undefined,
       enabled: true,
     };
-    const client = new KOSyncClient(config);
-    const result = await client.connect(username, password);
+    const client = new BookOrbitClient(config);
+    const result = await client.connect();
 
     if (result.success) {
-      const newSettings = { ...settings, kosync: config };
+      const newSettings = { ...settings, bookorbit: config };
       setSettings(newSettings);
       await saveSettings(envConfig, newSettings);
+      if (result.message) {
+        eventDispatcher.dispatch('toast', { message: _(result.message), type: 'info' });
+      }
     } else {
       eventDispatcher.dispatch('toast', {
         message: `${_('Failed to connect')}: ${_(result.message || 'Connection error')}`,
@@ -150,8 +155,8 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
   };
 
   const handleDisconnect = async () => {
-    const kosync = { ...settings.kosync, userkey: '', enabled: false };
-    const newSettings = { ...settings, kosync };
+    const bookorbit = { ...settings.bookorbit, userkey: '', password: '', enabled: false };
+    const newSettings = { ...settings, bookorbit };
     setSettings(newSettings);
     await saveSettings(envConfig, newSettings);
     setUsername('');
@@ -160,38 +165,35 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
   };
 
   const handleToggleEnabled = async () => {
-    const kosync = { ...settings.kosync, enabled: !settings.kosync.enabled };
-    const newSettings = { ...settings, kosync };
+    const bookorbit = { ...settings.bookorbit, enabled: !settings.bookorbit.enabled };
+    const newSettings = { ...settings, bookorbit };
+    setSettings(newSettings);
+    await saveSettings(envConfig, newSettings);
+  };
+
+  const handleToggleField = (field: BookOrbitToggleField) => async () => {
+    const bookorbit = { ...settings.bookorbit, [field]: !settings.bookorbit[field] };
+    const newSettings = { ...settings, bookorbit };
     setSettings(newSettings);
     await saveSettings(envConfig, newSettings);
   };
 
   const handleStrategyChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const kosync = { ...settings.kosync, strategy: e.target.value as KOSyncStrategy };
-    const newSettings = { ...settings, kosync };
-    setSettings(newSettings);
-    await saveSettings(envConfig, newSettings);
-  };
-
-  const handleChecksumMethodChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const kosync = {
-      ...settings.kosync,
-      checksumMethod: e.target.value as KOSyncChecksumMethod,
-    };
-    const newSettings = { ...settings, kosync };
+    const bookorbit = { ...settings.bookorbit, strategy: e.target.value as KOSyncStrategy };
+    const newSettings = { ...settings, bookorbit };
     setSettings(newSettings);
     await saveSettings(envConfig, newSettings);
   };
 
   const description: string = isConfigured
-    ? _('Sync as {{userDisplayName}}', { userDisplayName: settings.kosync.username })
-    : _('Connect to your KOReader Sync server.');
+    ? _('Sync as {{userDisplayName}}', { userDisplayName: settings.bookorbit.username })
+    : _('Connect to your BookOrbit server.');
 
   return (
     <div className='w-full'>
       <SubPageHeader
         parentLabel={_('Integrations')}
-        currentLabel={_('KOReader Sync')}
+        currentLabel={_('BookOrbit')}
         description={description}
         onBack={onBack}
       />
@@ -200,22 +202,14 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
         <div className='space-y-5'>
           <div className='card eink-bordered border-base-200 bg-base-100 overflow-hidden border'>
             <div className='divide-base-200 divide-y'>
-              {/* Each row uses min-h-14 + items-center so toggle/select/input
-                  rows render at a uniform height regardless of the embedded
-                  control's intrinsic size. Selects and inputs are end-aligned
-                  to match modern preferences-panel convention. */}
               <label className='flex min-h-14 items-center justify-between px-4'>
                 <SettingLabel>{_('Sync Server Connected')}</SettingLabel>
-                <Toggle checked={settings.kosync.enabled} onChange={handleToggleEnabled} />
+                <Toggle checked={settings.bookorbit.enabled} onChange={handleToggleEnabled} />
               </label>
-              {/* SettingsSelect handles the chromeless treatment, the
-                  custom MdArrowDropDown icon at the trailing edge (so the
-                  chevron lands at the same X as the toggle's right edge),
-                  and the focus/hover signal — see DESIGN.md §5. */}
               <div className='flex min-h-14 items-center justify-between gap-3 px-4'>
                 <SettingLabel>{_('Sync Strategy')}</SettingLabel>
                 <SettingsSelect
-                  value={settings.kosync.strategy}
+                  value={settings.bookorbit.strategy}
                   onChange={handleStrategyChange}
                   ariaLabel={_('Sync Strategy')}
                   options={[
@@ -226,15 +220,26 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
                   ]}
                 />
               </div>
-              <div className='flex min-h-14 items-center justify-between gap-3 px-4'>
-                <SettingLabel>{_('Checksum Method')}</SettingLabel>
-                <SettingsSelect
-                  value={settings.kosync.checksumMethod}
-                  onChange={handleChecksumMethodChange}
-                  ariaLabel={_('Checksum Method')}
-                  options={[{ value: 'binary', label: _('File Content') }]}
-                />
-              </div>
+              <SettingsSwitchRow
+                label={_('Sync Reading Progress')}
+                checked={settings.bookorbit.syncProgress}
+                onChange={handleToggleField('syncProgress')}
+              />
+              <SettingsSwitchRow
+                label={_('Sync Highlights and Bookmarks')}
+                checked={settings.bookorbit.syncNotes}
+                onChange={handleToggleField('syncNotes')}
+              />
+              <SettingsSwitchRow
+                label={_('Sync Reading Statistics')}
+                checked={settings.bookorbit.syncStats}
+                onChange={handleToggleField('syncStats')}
+              />
+              <SettingsSwitchRow
+                label={_('Sync Reading Status')}
+                checked={settings.bookorbit.syncBookStates}
+                onChange={handleToggleField('syncBookStates')}
+              />
               <div className='-me-2 flex min-h-14 items-center justify-between gap-3 px-4'>
                 <SettingLabel>{_('Device Name')}</SettingLabel>
                 <input
@@ -249,11 +254,11 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
           </div>
 
           <div className='space-y-1.5'>
-            <SectionTitle as='label' htmlFor='kosync-custom-headers' className='block'>
+            <SectionTitle as='label' htmlFor='bookorbit-custom-headers' className='block'>
               {_('Custom Headers (optional)')}
             </SectionTitle>
             <textarea
-              id='kosync-custom-headers'
+              id='bookorbit-custom-headers'
               value={customHeadersInput}
               onChange={handleCustomHeadersChange}
               placeholder={formatCustomHeadersInput({
@@ -300,13 +305,13 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
             }}
           >
             <div className='space-y-1.5'>
-              <SectionTitle as='label' htmlFor='kosync-server-url' className='block'>
+              <SectionTitle as='label' htmlFor='bookorbit-server-url' className='block'>
                 {_('Server URL')}
               </SectionTitle>
               <input
-                id='kosync-server-url'
+                id='bookorbit-server-url'
                 type='text'
-                placeholder='https://koreader.sync.server'
+                placeholder='https://books.example.com'
                 className='input input-bordered eink-bordered h-11 w-full text-sm focus:outline-none'
                 spellCheck='false'
                 value={url}
@@ -315,11 +320,11 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
             </div>
 
             <div className='space-y-1.5'>
-              <SectionTitle as='label' htmlFor='kosync-username' className='block'>
+              <SectionTitle as='label' htmlFor='bookorbit-username' className='block'>
                 {_('Username')}
               </SectionTitle>
               <input
-                id='kosync-username'
+                id='bookorbit-username'
                 type='text'
                 placeholder={_('Your Username')}
                 className='input input-bordered eink-bordered h-11 w-full text-sm focus:outline-none'
@@ -331,11 +336,11 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
             </div>
 
             <div className='space-y-1.5'>
-              <SectionTitle as='label' htmlFor='kosync-password' className='block'>
+              <SectionTitle as='label' htmlFor='bookorbit-password' className='block'>
                 {_('Password')}
               </SectionTitle>
               <input
-                id='kosync-password'
+                id='bookorbit-password'
                 type='password'
                 placeholder={_('Your Password')}
                 className='input input-bordered eink-bordered h-11 w-full text-sm focus:outline-none'
@@ -346,11 +351,11 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
             </div>
 
             <div className='space-y-1.5'>
-              <SectionTitle as='label' htmlFor='kosync-custom-headers' className='block'>
+              <SectionTitle as='label' htmlFor='bookorbit-custom-headers' className='block'>
                 {_('Custom Headers (optional)')}
               </SectionTitle>
               <textarea
-                id='kosync-custom-headers'
+                id='bookorbit-custom-headers'
                 value={customHeadersInput}
                 onChange={(e) => {
                   setCustomHeadersInput(e.target.value);
@@ -373,6 +378,14 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
                 </div>
               )}
             </div>
+
+            <Tips>
+              <li>
+                {_(
+                  'Create KOReader credentials in BookOrbit under Settings > Integrations > KOReader, then enter them here with your server address.',
+                )}
+              </li>
+            </Tips>
 
             <div className='flex justify-end pt-1'>
               <button
@@ -399,4 +412,4 @@ const KOSyncForm: React.FC<KOSyncFormProps> = ({ onBack }) => {
   );
 };
 
-export default KOSyncForm;
+export default BookOrbitForm;
