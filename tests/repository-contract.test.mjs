@@ -6,6 +6,7 @@ const contract = JSON.parse(readFileSync('contract/moke-reader.v1.json', 'utf8')
 const rootPackage = JSON.parse(readFileSync('package.json', 'utf8'));
 const appPackage = JSON.parse(readFileSync('apps/readest-app/package.json', 'utf8'));
 const nextConfig = readFileSync('apps/readest-app/next.config.mjs', 'utf8');
+const readerBackend = readFileSync('apps/readest-app/src-tauri/src/lib.rs', 'utf8');
 const gitmodules = readFileSync('.gitmodules', 'utf8');
 
 test('publishes the versioned Moke reader contract', () => {
@@ -22,6 +23,8 @@ test('exports only the embedded Reader page', () => {
   assert.match(nextConfig, /output: isDev \? undefined : 'export'/);
   assert.match(appPackage.scripts['build:reader'], /setup-vendors/);
   assert.match(appPackage.scripts['build:reader'], /\.env\.moke-reader/);
+  assert.match(readerBackend, /http:\/\/localhost:3001\/readest\/reader/);
+  assert.match(readerBackend, /WebviewUrl::App\("readest\/reader\.html"\.into\(\)\)/);
   const pages = readdirSync('apps/readest-app/src/pages', { recursive: true })
     .filter((path) => /\.(?:js|jsx|ts|tsx)$/.test(path));
   assert.deepEqual(pages, ['reader.moke.tsx']);

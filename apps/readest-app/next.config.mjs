@@ -43,13 +43,17 @@ const nextConfig = {
     'ai-sdk-ollama',
     '@assistant-ui/react',
     '@assistant-ui/react-markdown',
-    'i18next-browser-languagedetector',
-    'react-i18next',
-    'i18next',
-    '@tauri-apps',
-    'highlight.js',
-    'foliate-js',
-    'marked',
+    ...(isDev
+      ? []
+      : [
+          'i18next-browser-languagedetector',
+          'react-i18next',
+          'i18next',
+          '@tauri-apps',
+          'highlight.js',
+          'foliate-js',
+          'marked',
+        ]),
   ],
 };
 

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:reader": "dotenv -e .env.moke-reader -- next dev --webpack -p 3001",
+    "dev:reader": "dotenv -e .env.moke-reader -- next dev --turbo -p 3001",
     "build:reader": "pnpm setup-vendors && dotenv -e .env.moke-reader -- next build --webpack",
     "build:moke-reader": "pnpm build:reader",
     "test": "vitest run",
