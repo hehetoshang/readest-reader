@@ -28,8 +28,15 @@ function initialPanelVisibility(): boolean {
 }
 
 export default function DebugLogIntegration() {
-  const [visible, setVisible] = useState(initialPanelVisibility);
+  // The server cannot observe Moke's injected launch globals. Keep the first
+  // client render identical to SSR, then restore the requested visibility
+  // after hydration so the debug launcher never creates an overlay error.
+  const [visible, setVisible] = useState(false);
   const embedded = typeof window !== 'undefined' && !!window.__MOKE_EMBEDDED;
+
+  useEffect(() => {
+    if (embedded) setVisible(initialPanelVisibility());
+  }, [embedded]);
 
   useEffect(() => {
     if (!embedded) return;
