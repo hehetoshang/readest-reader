@@ -1,64 +1,35 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-docker/.env
+# Dependencies and generated vendors
+node_modules/
+apps/readest-app/public/vendor/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
-.yarn/install-state.gz
-
-# nested vendor git clones (dev leftovers; real vendors live in ../vendor/)
-/packages/
-
-# testing
-/coverage
-
-# next.js
-/.next/
-/out/
-
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-/certs
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# local env files
-.env*.local
-
-# vercel
-.vercel
-
-# typescript
+# Build/test output
+out/
+target/
+coverage/
+.next/
+apps/readest-app/.next/
 *.tsbuildinfo
 next-env.d.ts
+*.log
 
-# Rust build
-target
+# Local configuration and credentials
+.env*
+apps/readest-app/.env*
+!apps/readest-app/.env.moke-reader
+!apps/readest-app/.env.local.example
+!apps/readest-app/.env.tauri.example
+!apps/readest-app/.env.web.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+private_keys/
+certs/
 
-fastlane/report.xml
-fastlane/metadata/android/en-US/changelogs
-
-*.koplugin.zip
-
-# nix
-result*
-
-.playwright-mcp/
-.gstack
-
-.claude/worktrees
+# Editor/OS state
+.DS_Store
+.vscode/
+.idea/
 .claude/settings.local.json
-
-fastlane/staging/
-fastlane/metadata-play/android/en-US/changelogs
-
-apps/readest.koplugin/bin/
-apps/readest.koplugin/native/localsend-bin/target/

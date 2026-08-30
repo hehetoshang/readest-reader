@@ -1,33 +1,30 @@
 {
-  "name": "@readest/monorepo",
+  "name": "@readest/reader-monorepo",
+  "version": "0.1.0",
   "private": true,
-  "repository": "readest/readest",
+  "description": "Standalone embeddable Readest Reader",
+  "repository": "https://github.com/hehetoshang/readest-reader",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@11.1.1",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
-    "test": "pnpm --filter @readest/readest-app test",
-    "test:lua": "pnpm --filter @readest/readest-app test:lua",
+    "dev": "pnpm --filter @readest/readest-app dev:reader",
+    "setup:vendors": "pnpm --filter @readest/readest-app setup-vendors",
+    "build": "pnpm --filter @readest/readest-app build:reader",
+    "start": "node scripts/serve-reader.mjs",
+    "test": "pnpm test:contract && pnpm --filter @readest/readest-app test",
+    "test:contract": "node --test tests/*.test.mjs",
+    "typecheck": "pnpm --filter @readest/readest-app typecheck",
+    "check:rust": "cargo check -p Readest --no-default-features",
     "lint": "pnpm --filter @readest/readest-app lint",
-    "lint:lua": "pnpm --filter @readest/readest-app lint:lua",
-    "tauri": "pnpm --filter @readest/readest-app tauri",
-    "dev-web": "pnpm --filter @readest/readest-app dev-web",
-    "prepare": "husky",
-    "fmt:check": "pnpm --filter @readest/readest-app fmt:check",
-    "clippy:check": "pnpm --filter @readest/readest-app clippy:check",
-    "worktree:new": "pnpm --filter @readest/readest-app worktree:new",
-    "worktree:rm": "pnpm --filter @readest/readest-app worktree:rm",
     "format": "biome format --write .",
     "format:check": "biome format ."
   },
-  "packageManager": "pnpm@11.1.1",
   "devDependencies": {
     "@biomejs/biome": "^2.4.9",
     "@sindresorhus/tsconfig": "^6.0.0",
-    "husky": "^9.1.6",
-    "lint-staged": "^16.2.7",
-    "typescript": "^5"
-  },
-  "lint-staged": {
-    "**/*.{js,jsx,ts,tsx,css,json}": [
-      "biome format --write --no-errors-on-unmatched"
-    ]
+    "typescript": "^5.7.2"
   }
 }
