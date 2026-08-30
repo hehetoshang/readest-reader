@@ -49,5 +49,5 @@ The automation performed these observable phases (only sanitized fields retained
 1. The real Moke application established a connection to a real Talebook deployment.
 2. Moke's actual Tauri `open_reader` IPC opened a real EPUB from an approved AppData path.
 3. The independent Reader dev surface loaded at `/readest/reader`; Foliate created a viewer and rendered chapter text.
-4. A forced unreachable progress endpoint produced the stable, sanitized `reader:error` browser event while Reader remained rendered.
+4. A forced unreachable progress endpoint produced the stable, sanitized `moke:reader-error` browser event (matching the host `reader:error` IPC payload) while Reader remained rendered.
 5. The E2E log contained no password, cookie, authorization header or token. A 1280×800 Reader screenshot was delivered with the issue result rather than committed to source.
