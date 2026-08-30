@@ -28,18 +28,24 @@ function initialPanelVisibility(): boolean {
 }
 
 export default function DebugLogIntegration() {
-  // The server cannot observe Moke's injected launch globals. Keep the first
-  // client render identical to SSR, then restore the requested visibility
-  // after hydration so the debug launcher never creates an overlay error.
+  // The launch script and persisted storage only exist in the browser. Keep
+  // both SSR and the first hydration render empty, then reveal the interactive
+  // panel from an effect. Reading those values in a useState initializer made
+  // the client start with a button where SSR emitted nothing, so React threw
+  // away the server tree and rebuilt the whole root.
+  const [mounted, setMounted] = useState(false);
+  const [embedded, setEmbedded] = useState(false);
   const [visible, setVisible] = useState(false);
-  const embedded = typeof window !== 'undefined' && !!window.__MOKE_EMBEDDED;
 
   useEffect(() => {
-    if (embedded) setVisible(initialPanelVisibility());
-  }, [embedded]);
+    const nextEmbedded = !!window.__MOKE_EMBEDDED;
+    setEmbedded(nextEmbedded);
+    setVisible(nextEmbedded && initialPanelVisibility());
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
-    if (!embedded) return;
+    if (!mounted || !embedded) return;
     let disposed = false;
     let cleanup: (() => void) | undefined;
     void installDebugLogBridge(setVisible).then((uninstall) => {
@@ -50,9 +56,12 @@ export default function DebugLogIntegration() {
       disposed = true;
       cleanup?.();
     };
-  }, [embedded]);
+  }, [mounted, embedded]);
 
   useEffect(() => {
+    // Preserve module-time capture until the launch context has been read.
+    // Otherwise this initial effect would uninstall it during hydration.
+    if (!mounted) return;
     if (!embedded || !visible) {
       uninstallConsoleCapture();
       uninstallNetworkCapture();
@@ -64,8 +73,8 @@ export default function DebugLogIntegration() {
       uninstallConsoleCapture();
       uninstallNetworkCapture();
     };
-  }, [embedded, visible]);
+  }, [mounted, embedded, visible]);
 
-  if (!embedded) return null;
+  if (!mounted || !embedded) return null;
   return <DebugLogPanel visible={visible} />;
 }

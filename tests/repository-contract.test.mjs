@@ -23,6 +23,7 @@ test('exports only the embedded Reader page', () => {
   assert.match(nextConfig, /output: isDev \? undefined : 'export'/);
   assert.match(appPackage.scripts['build:reader'], /setup-vendors/);
   assert.match(appPackage.scripts['build:reader'], /\.env\.moke-reader/);
+  assert.match(appPackage.scripts['build:reader'], /next build --webpack/);
   assert.match(readerBackend, /http:\/\/localhost:3001\/readest\/reader/);
   assert.match(readerBackend, /WebviewUrl::App\("readest\/reader\.html"\.into\(\)\)/);
   const pages = readdirSync('apps/readest-app/src/pages', { recursive: true })
