@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
 
 const contract = JSON.parse(readFileSync('contract/moke-reader.v1.json', 'utf8'));
@@ -8,6 +9,13 @@ const appPackage = JSON.parse(readFileSync('apps/readest-app/package.json', 'utf
 const nextConfig = readFileSync('apps/readest-app/next.config.mjs', 'utf8');
 const readerBackend = readFileSync('apps/readest-app/src-tauri/src/lib.rs', 'utf8');
 const gitmodules = readFileSync('.gitmodules', 'utf8');
+
+function listFilesRecursive(root, relative = '') {
+  return readdirSync(join(root, relative), { withFileTypes: true }).flatMap((entry) => {
+    const child = relative ? `${relative}/${entry.name}` : entry.name;
+    return entry.isDirectory() ? listFilesRecursive(root, child) : [child];
+  });
+}
 
 test('publishes the versioned Moke reader contract', () => {
   assert.equal(contract.id, 'moke.readest.embed.v1');
@@ -26,8 +34,9 @@ test('exports only the embedded Reader page', () => {
   assert.match(appPackage.scripts['build:reader'], /next build --webpack/);
   assert.match(readerBackend, /http:\/\/localhost:3001\/readest\/reader/);
   assert.match(readerBackend, /WebviewUrl::App\("readest\/reader\.html"\.into\(\)\)/);
-  const pages = readdirSync('apps/readest-app/src/pages', { recursive: true })
-    .filter((path) => /\.(?:js|jsx|ts|tsx)$/.test(path));
+  const pages = listFilesRecursive('apps/readest-app/src/pages').filter((path) =>
+    /\.(?:js|jsx|ts|tsx)$/.test(path),
+  );
   assert.deepEqual(pages, ['reader.moke.tsx']);
   for (const excluded of [
     'apps/readest-app/src/app/api',
