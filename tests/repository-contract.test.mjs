@@ -8,6 +8,7 @@ const rootPackage = JSON.parse(readFileSync('package.json', 'utf8'));
 const appPackage = JSON.parse(readFileSync('apps/readest-app/package.json', 'utf8'));
 const nextConfig = readFileSync('apps/readest-app/next.config.mjs', 'utf8');
 const readerBackend = readFileSync('apps/readest-app/src-tauri/src/lib.rs', 'utf8');
+const readerBuild = readFileSync('apps/readest-app/src-tauri/build.rs', 'utf8');
 const gitmodules = readFileSync('.gitmodules', 'utf8');
 
 function listFilesRecursive(root, relative = '') {
@@ -46,6 +47,14 @@ test('exports only the embedded Reader page', () => {
   ]) {
     assert.equal(existsSync(excluded), false, `${excluded} must stay outside the Reader boundary`);
   }
+});
+
+test('embedded Windows library builds do not require standalone packaging assets', () => {
+  assert.match(readerBuild, /CARGO_FEATURE_STANDALONE/);
+  assert.match(readerBuild, /CARGO_CFG_TARGET_OS[\s\S]*Ok\("windows"\)/);
+  assert.match(readerBuild, /if embedded_windows \{[\s\S]*emit_embedded_windows_cfg\(\)/);
+  assert.match(readerBuild, /else \{[\s\S]*tauri_build::try_build/);
+  assert.match(readerBuild, /cargo:rustc-cfg=desktop/);
 });
 
 test('pins self-contained Reader vendors and public provenance', () => {
