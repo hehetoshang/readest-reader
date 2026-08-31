@@ -283,6 +283,70 @@ function isAnnotationNavigationEvent(data: Record<string, unknown>): boolean {
 // 主窗口的 ReaderProgressProvider 重复保存。
 
 const PROGRESS_SAVE_DEBOUNCE_MS = 1200;
+const SAFE_ERROR_CODE = /^[a-z0-9._-]{1,64}$/i;
+
+export interface MokeReaderErrorDetail {
+  code: string;
+  operation: 'progress.save';
+  status?: number;
+  retryable: boolean;
+}
+
+class MokeProgressSaveError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status?: number,
+  ) {
+    super(code);
+    this.name = 'MokeProgressSaveError';
+  }
+}
+
+function reportMokeReaderError(error: unknown): void {
+  const status = error instanceof MokeProgressSaveError ? error.status : undefined;
+  const code =
+    error instanceof MokeProgressSaveError && SAFE_ERROR_CODE.test(error.code)
+      ? error.code
+      : 'progress.network';
+  const detail: MokeReaderErrorDetail = {
+    code,
+    operation: 'progress.save',
+    ...(status === undefined ? {} : { status }),
+    retryable: status === undefined || status === 408 || status === 429 || status >= 500,
+  };
+
+  // Deliberately log only normalized metadata: transport errors may contain a
+  // URL, cookie or credential supplied by the embedding host.
+  console.warn('[mokeBridge] Reader integration error:', detail);
+  window.dispatchEvent(new CustomEvent<MokeReaderErrorDetail>('moke:reader-error', { detail }));
+  void _doEmit('reader:error', detail as unknown as Record<string, unknown>);
+}
+
+async function validateProgressResponse(response: Response): Promise<void> {
+  if (!response.ok) {
+    throw new MokeProgressSaveError(`progress.http.${response.status}`, response.status);
+  }
+
+  const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+  if (!contentType.includes('application/json')) {
+    throw new MokeProgressSaveError('progress.invalid_response', response.status);
+  }
+
+  let envelope: { err?: unknown };
+  try {
+    envelope = (await response.json()) as { err?: unknown };
+  } catch {
+    throw new MokeProgressSaveError('progress.invalid_response', response.status);
+  }
+  if (
+    typeof envelope.err === 'string' &&
+    envelope.err !== '' &&
+    envelope.err !== 'ok'
+  ) {
+    const serverCode = SAFE_ERROR_CODE.test(envelope.err) ? envelope.err : 'invalid';
+    throw new MokeProgressSaveError(`progress.api.${serverCode}`, response.status);
+  }
+}
 
 let progressSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingProgress: Record<string, unknown> | null = null;
@@ -322,17 +386,22 @@ async function saveProgressToMokeServer(data: Record<string, unknown>): Promise<
 
   try {
     const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
-    await tauriFetch(`${serverUrl}/api/book/${String(mokeBookId)}/progress`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ progress: payload }),
-      credentials: 'include',
-      maxRedirections: 5,
-      danger: { acceptInvalidCerts: true, acceptInvalidHostnames: true },
-    } as unknown as RequestInit);
+    const response = await tauriFetch(
+      `${serverUrl}/api/book/${encodeURIComponent(String(mokeBookId))}/progress`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ progress: payload }),
+        credentials: 'include',
+        maxRedirections: 5,
+        danger: { acceptInvalidCerts: true, acceptInvalidHostnames: true },
+      } as unknown as RequestInit,
+    );
+    await validateProgressResponse(response);
   } catch (error) {
-    // 尽力而为：保存失败不打断阅读，下一次翻页或关闭书籍时会重试。
-    console.warn('[mokeBridge] 保存阅读进度到 Moke 服务器失败:', error);
+    // Best effort: rendering continues, while both Moke IPC and the browser
+    // error event expose a stable, non-secret failure for diagnostics/E2E.
+    reportMokeReaderError(error);
   }
 }
 

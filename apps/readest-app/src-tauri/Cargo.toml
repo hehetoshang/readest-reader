@@ -3,10 +3,10 @@ name = "Readest"
 version = "0.2.2"
 description = "Your online library"
 authors = ["Bilingify LLC"]
-license = ""
-repository = ""
+license = "AGPL-3.0-only"
+repository = "https://github.com/hehetoshang/readest-reader"
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.88"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,14 +14,16 @@ rust-version = "1.77.2"
 name = "readestlib"
 crate-type = ["staticlib", "cdylib", "lib"]
 
+[[bin]]
+name = "Readest"
+path = "src/main.rs"
+required-features = ["standalone"]
+
 [features]
-# `standalone` compiles readest's own `run()` entry point (which embeds
-# readest's tauri.conf.json via generate_context!). It is on by default so
-# `tauri build` of this app keeps working. Consumers that embed readestlib as
-# a library (e.g. the Moke client) disable default features and instead use
-# `register_reader_plugins` / `open_reader_window`, so they don't pull in
-# readest's own context/build requirements.
-default = ["standalone"]
+# The extracted repository is an embeddable reader library by default.
+# `standalone` retains the upstream shell entry point for downstream experiments,
+# but supported hosts (including Moke) use the public registration APIs below.
+default = []
 standalone = []
 # Internal feature to suppress warnings from old objc crate
 cargo-clippy = []

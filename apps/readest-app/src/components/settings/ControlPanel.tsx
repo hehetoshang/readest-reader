@@ -26,7 +26,6 @@ import PageTurnerSettings from './PageTurnerSettings';
 import AnnotationToolbarCustomizer from './AnnotationToolbarCustomizer';
 import { DEFAULT_ANNOTATION_TOOLBAR_ITEMS } from '@/utils/annotationToolbar';
 import { canShareText } from '@/utils/share';
-import { optInTelemetry, optOutTelemetry } from '@/utils/telemetry';
 
 const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterReset }) => {
   const _ = useTranslation();
@@ -68,7 +67,6 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
   );
   const [screenWakeLock, setScreenWakeLock] = useState(settings.screenWakeLock);
   const [autohideCursor, setAutohideCursor] = useState(settings.autohideCursor);
-  const [isTelemetryEnabled, setIsTelemetryEnabled] = useState(settings.telemetryEnabled);
 
   const resetToDefaults = useResetViewSettings();
   const pageTurnerResetRef = useRef<() => void>(() => {});
@@ -285,17 +283,6 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copyToNotebook]);
 
-  const toggleTelemetry = () => {
-    const newValue = !isTelemetryEnabled;
-    saveSysSettings(envConfig, 'telemetryEnabled', newValue);
-    setIsTelemetryEnabled(newValue);
-    if (newValue) {
-      optInTelemetry();
-    } else {
-      optOutTelemetry();
-    }
-  };
-
   const getQuickActionOptions = () => {
     return [
       {
@@ -511,14 +498,6 @@ const ControlPanel: React.FC<SettingsPanelPanelProp> = ({ bookKey, onRegisterRes
         )}
       </BoxedList>
 
-      <BoxedList title={_('Privacy')} data-setting-id='settings.control.telemetry'>
-        <SettingsSwitchRow
-          label={_('Help improve Readest')}
-          description={isTelemetryEnabled ? _('Sharing anonymized statistics') : ''}
-          checked={isTelemetryEnabled}
-          onChange={toggleTelemetry}
-        />
-      </BoxedList>
     </div>
   );
 };

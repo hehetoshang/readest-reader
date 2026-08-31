@@ -532,14 +532,18 @@ fn open_reader_window_with_debug(
     // compatibility — chrome can be refined once it opens reliably.
     let app_main = app.clone();
     app.run_on_main_thread(move || {
-        let result = WebviewWindowBuilder::new(
-            &app_main,
-            label,
-            // The embedded frontend is exported under `/readest`, and its
-            // actual reader route is `reader.html`. Loading `index.html`
-            // opens Readest's library/root route instead of the reader.
-            WebviewUrl::App("readest/reader.html".into()),
-        )
+        // Production reads the bundled export. Debug builds use the dedicated
+        // Reader dev server started by Moke's scripts/dev.mjs; resolving an
+        // App URL against Moke's own port 3000 would load the wrong Next app.
+        #[cfg(debug_assertions)]
+        let reader_url = WebviewUrl::External(
+            Url::parse("http://localhost:3001/readest/reader")
+                .expect("valid Reader development URL"),
+        );
+        #[cfg(not(debug_assertions))]
+        let reader_url = WebviewUrl::App("readest/reader.html".into());
+
+        let result = WebviewWindowBuilder::new(&app_main, label, reader_url)
         .title("Readest")
         .inner_size(1280.0, 800.0)
         .min_inner_size(800.0, 600.0)

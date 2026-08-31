@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "id": "moke.readest.embed.v1",
+  "readerBasePath": "/readest",
+  "readerRoute": "/readest/reader",
+  "progressSchema": "moke.readest.progress.v1",
+  "launchParameters": {
+    "file": { "required": true, "repeatable": true, "description": "Host-authorized local book path" },
+    "moke": { "required": true, "constant": "1" },
+    "mokeBookId": { "required": false },
+    "mokeServerUrl": { "required": false, "protocols": ["http", "https"] },
+    "mokeRestoreProgress": { "required": false, "encoding": "JSON" },
+    "mokeReturnTo": { "required": false, "allowed": ["/library"] },
+    "mokeEink": { "required": false, "allowed": ["0", "1"] },
+    "mokeDebug": { "required": false, "allowed": ["0", "1"] }
+  },
+  "hostCommands": [
+    "ext_reader_event",
+    "moke_navigate",
+    "moke_runtime_platform"
+  ],
+  "readerEvents": [
+    "book:opened",
+    "book:closed",
+    "page:changed",
+    "reader:error",
+    "annotation-locate:finished"
+  ],
+  "progressApi": {
+    "method": "POST",
+    "pathTemplate": "/api/book/{mokeBookId}/progress",
+    "credentials": "include",
+    "bodyProperty": "progress",
+    "successErrValues": ["", "ok"],
+    "transport": "@tauri-apps/plugin-http"
+  },
+  "nativeLibrary": {
+    "crate": "readestlib",
+    "defaultFeatures": false,
+    "registrationFunctions": [
+      "register_reader_plugins",
+      "register_reader_protocols",
+      "reader_invoke_handler",
+      "manage_reader_state"
+    ]
+  }
+}

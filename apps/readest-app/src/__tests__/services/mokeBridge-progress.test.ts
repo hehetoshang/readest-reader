@@ -24,7 +24,12 @@ const SERVER_URL = 'http://192.168.1.5:8080';
 describe('mokeBridge server-side progress persistence', () => {
   beforeEach(() => {
     fetchMock.mockReset();
-    fetchMock.mockResolvedValue({ status: 200 } as Response);
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ err: 'ok' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
     invokeMock.mockReset();
     invokeMock.mockResolvedValue(undefined);
     window.__MOKE_EMBEDDED = true;
@@ -80,6 +85,50 @@ describe('mokeBridge server-side progress persistence', () => {
     expect(body.progress.section_href).toBe('chapter-2.xhtml');
     expect(body.progress.chapter).toBe('第二章');
     expect(typeof body.progress.updated_at).toBe('string');
+  });
+
+  it('emits a sanitized observable error without interrupting reading', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ err: 'service.unavailable' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const errors: Array<Record<string, unknown>> = [];
+    window.addEventListener(
+      'moke:reader-error',
+      ((event: CustomEvent<Record<string, unknown>>) => {
+        errors.push(event.detail);
+      }) as unknown as EventListener,
+      { once: true },
+    );
+
+    void emitReaderEvent('page:changed', {
+      book_id: 'abc123',
+      location: 'epubcfi(/6/4!/4/2)',
+    });
+    await vi.advanceTimersByTimeAsync(1300);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toEqual([
+      {
+        code: 'progress.http.503',
+        operation: 'progress.save',
+        status: 503,
+        retryable: true,
+      },
+    ]);
+    expect(invokeMock).toHaveBeenCalledWith(
+      'ext_reader_event',
+      expect.objectContaining({
+        event: 'reader:error',
+        data: expect.objectContaining({ code: 'progress.http.503', status: 503 }),
+      }),
+    );
+    expect(JSON.stringify(errors)).not.toContain(SERVER_URL);
+    warning.mockRestore();
   });
 
   it('does not persist when no server URL is forwarded', async () => {
