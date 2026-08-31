@@ -7,55 +7,70 @@ fn main() {
     propagate_sentry_dsn();
     propagate_app_version();
 
-    // Declare the app's own (non-plugin) commands in the ACL app manifest.
-    // Since tauri 2.11, IPC from remote origins is always subject to ACL
-    // resolution (upstream #15266); without a manifest the app commands have
-    // no ACL entries at all and remote pages get "not allowed. Plugin not
-    // found". The webdriver test harness serves the vitest tester page from
-    // its own port, which is a remote origin, so it needs these permissions
-    // granted via capabilities (see capabilities/webdriver-remote.json).
-    // With a manifest defined, LOCAL windows also resolve app commands
-    // through the ACL, so capabilities/default.json must grant them too.
-    // Keep this list in sync with the generate_handler! list in lib.rs.
-    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
-        tauri_build::AppManifest::new().commands(&[
-            "start_server",
-            "download_file",
-            "upload_file",
-            "get_environment_variable",
-            "get_executable_dir",
-            "set_webview_info",
-            "is_updater_disabled",
-            "allow_paths_in_scopes",
-            "optimize_cover_thumbnails",
-            "read_dir",
-            "parse_epub_metadata",
-            "extract_epub_cover_full",
-            "parse_epub_full",
-            "parse_mobi_metadata",
-            "extract_mobi_cover_full",
-            "auth_with_safari",
-            "start_apple_sign_in",
-            "set_traffic_lights",
-            "show_lookup_popover",
-            "update_book_presence",
-            "clear_book_presence",
-            "clip_url",
-            "spawn_fresh_browser",
-            "verify_update_signature",
-            "install_nightly_update",
-            "localsend_start",
-            "localsend_stop",
-            "localsend_get_status",
-            "localsend_list_devices",
-            "localsend_announce",
-            "localsend_respond",
-            "localsend_cancel_receive",
-            "localsend_send_files",
-            "localsend_cancel_send",
-        ]),
-    ))
-    .expect("failed to run tauri-build");
+    // The embeddable crate does not own Windows resources: Moke supplies the
+    // executable icon and app ACL. Running tauri-build for this dependency on
+    // Windows would incorrectly require Readest's excluded standalone
+    // `icons/icon.ico`. Keep tauri-build on every other target (especially
+    // mobile/OHOS, where it emits platform setup) and for standalone builds.
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_STANDALONE");
+    let embedded_windows = env::var_os("CARGO_FEATURE_STANDALONE").is_none()
+        && env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+    if embedded_windows {
+        emit_embedded_windows_cfg();
+    } else {
+        // Since tauri 2.11, IPC from remote origins is always subject to ACL
+        // resolution (upstream #15266); without a manifest the app commands
+        // have no ACL entries. Keep this list in sync with generate_handler!.
+        tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+            tauri_build::AppManifest::new().commands(&[
+                "start_server",
+                "download_file",
+                "upload_file",
+                "get_environment_variable",
+                "get_executable_dir",
+                "set_webview_info",
+                "is_updater_disabled",
+                "allow_paths_in_scopes",
+                "optimize_cover_thumbnails",
+                "read_dir",
+                "parse_epub_metadata",
+                "extract_epub_cover_full",
+                "parse_epub_full",
+                "parse_mobi_metadata",
+                "extract_mobi_cover_full",
+                "auth_with_safari",
+                "start_apple_sign_in",
+                "set_traffic_lights",
+                "show_lookup_popover",
+                "update_book_presence",
+                "clear_book_presence",
+                "clip_url",
+                "spawn_fresh_browser",
+                "verify_update_signature",
+                "install_nightly_update",
+                "localsend_start",
+                "localsend_stop",
+                "localsend_get_status",
+                "localsend_list_devices",
+                "localsend_announce",
+                "localsend_respond",
+                "localsend_cancel_receive",
+                "localsend_send_files",
+                "localsend_cancel_send",
+            ]),
+        ))
+        .expect("failed to run tauri-build");
+    }
+}
+
+fn emit_embedded_windows_cfg() {
+    // These aliases are normally emitted by tauri-build before it reaches the
+    // Windows resource compiler. The library still needs them for its desktop
+    // command modules when the host intentionally skips that resource step.
+    println!("cargo:rustc-check-cfg=cfg(desktop)");
+    println!("cargo:rustc-cfg=desktop");
+    println!("cargo:rustc-check-cfg=cfg(mobile)");
+    println!("cargo:rustc-check-cfg=cfg(dev)");
 }
 
 /// Bake the app version from `package.json` into the crate as `READEST_APP_VERSION`
