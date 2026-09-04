@@ -33,6 +33,10 @@ import {
 import { clearDiscordPresence } from '@/utils/discord';
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
 import { emitReaderEvent } from '@/services/mokeBridge';
+import {
+  mokeRemoteSourceErrorDetail,
+  type MokeRemoteSourceErrorDetail,
+} from '@/services/mokeRemoteSource';
 import { useAuth } from '@/context/AuthContext';
 import { resolveReaderReturnTarget } from '@/utils/readerBack';
 
@@ -90,6 +94,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   const closingBooksRef = useRef<{ bookKeys: string; promise: Promise<void> } | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorLoading, setErrorLoading] = useState(false);
+  const [remoteSourceError, setRemoteSourceError] = useState<MokeRemoteSourceErrorDetail | null>(null);
 
   useBookShortcuts({ sideBarBookKey, bookKeys });
   useMokeCommandListener(bookKeys);
@@ -184,8 +189,14 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     hasHandledOpenFiles.current = true;
     window.OPEN_WITH_FILES = null;
 
-    const failToOpen = () => {
+    const failToOpen = (error?: unknown) => {
       setErrorLoading(true);
+      const detail = mokeRemoteSourceErrorDetail(error);
+      if (detail) {
+        setRemoteSourceError(detail);
+        void emitReaderEvent('reader:error', detail as unknown as Record<string, unknown>);
+        return;
+      }
       eventDispatcher.dispatch('toast', {
         message: _('Unable to open book'),
         callback: async () => {
@@ -218,6 +229,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
 
       const bookIds: string[] = [];
       let libraryMutated = false;
+      let firstOpenError: unknown;
       for (const file of files) {
         try {
           // Hash-precheck: if the file is already a managed (non-deleted)
@@ -250,12 +262,13 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
             libraryMutated = true;
           }
         } catch (e) {
+          firstOpenError ??= e;
           console.warn('Failed to open file in reader window:', file, e);
         }
       }
 
       if (bookIds.length === 0) {
-        failToOpen();
+        failToOpen(firstOpenError);
         return;
       }
       if (libraryMutated) setLibrary(library);
@@ -276,7 +289,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
         if (!getViewState(key)) {
           initViewState(envConfig, id, key, isPrimary).catch((error) => {
             console.log('Error initializing book', key, error);
-            failToOpen();
+            failToOpen(error);
           });
           if (index === 0) setSideBarBookKey(key);
         }
@@ -508,6 +521,31 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       saveSettingsAndGoToLibrary();
     }
   };
+
+  if (remoteSourceError) {
+    return (
+      <div className='hero hero-content full-height px-6 text-center'>
+        <div className='max-w-md'>
+          <h1 className='text-xl font-semibold'>{_('Unable to open book')}</h1>
+          <p className='mt-3 opacity-70'>{_('Network error')}</p>
+          <div className='mt-6 flex flex-wrap justify-center gap-3'>
+            <button className='btn btn-primary' onClick={() => window.location.reload()}>
+              {_('Retry')}
+            </button>
+            <button
+              className='btn btn-outline'
+              onClick={async () => {
+                const service = await envConfig.getAppService();
+                await closeReaderWindowOrGoToLibrary(service, router);
+              }}
+            >
+              {_('Go Back')} · {_('Download')}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!bookKeys || bookKeys.length === 0) {
     return (

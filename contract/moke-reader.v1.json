@@ -9,6 +9,7 @@
     "moke": { "required": true, "constant": "1" },
     "mokeBookId": { "required": false },
     "mokeServerUrl": { "required": false, "protocols": ["http", "https"] },
+    "mokeSourceServerUrl": { "required": false, "protocols": ["http", "https"], "description": "Current Moke server origin used only to authorize an online source" },
     "mokeRestoreProgress": { "required": false, "encoding": "JSON" },
     "mokeReturnTo": { "required": false, "allowed": ["/library"] },
     "mokeEink": { "required": false, "allowed": ["0", "1"] },
@@ -26,6 +27,14 @@
     "reader:error",
     "annotation-locate:finished"
   ],
+  "onlineSource": {
+    "formats": ["epub"],
+    "pathTemplate": "/read/resource/{mokeBookId}.epub?revision={revision}",
+    "mime": "application/epub+zip",
+    "rangeRequired": true,
+    "redirects": 0,
+    "transport": "@tauri-apps/plugin-http"
+  },
   "progressApi": {
     "method": "POST",
     "pathTemplate": "/api/book/{mokeBookId}/progress",

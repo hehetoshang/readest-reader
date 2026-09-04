@@ -44,6 +44,19 @@ describe('bootstrapMokeLaunchContext', () => {
     expect(window.__MOKE_RESTORE_PROGRESS).toMatchObject({ location: 'epubcfi(/6/8)' });
   });
 
+  it('keeps the online source origin separate from progress persistence', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/reader?moke=1&mokeBookId=42&mokeSourceServerUrl=https%3A%2F%2Fbooks.example',
+    );
+
+    bootstrapMokeLaunchContext();
+
+    expect(window.__MOKE_SOURCE_SERVER_URL).toBe('https://books.example');
+    expect(window.__MOKE_SERVER_URL).toBeNull();
+  });
+
   it('forwards the Moke debug panel launch flag', () => {
     window.history.replaceState({}, '', '/reader?moke=1&mokeDebug=1&mokeBookId=42');
 
