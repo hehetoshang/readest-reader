@@ -55,6 +55,17 @@ export interface ClosableFile extends File {
   close(): Promise<void>;
 }
 
+export interface RemoteFileTransport {
+  fetch(url: string, init?: RequestInit): Promise<Response>;
+  close?(): void;
+  /** Optional source-specific cache window; online books keep this small. */
+  maxCacheChunkSize?: number;
+}
+
+const defaultRemoteFileTransport: RemoteFileTransport = {
+  fetch: (url, init) => fetch(url, init),
+};
+
 export class NativeFile extends File implements ClosableFile {
   #handle: FileHandle | null = null;
   #fp: string;
@@ -293,19 +304,29 @@ export class RemoteFile extends File implements ClosableFile {
   // When true, byte ranges are carried in the URL query (?start=&end=) instead
   // of a `Range` header — see fromNativePath().
   #queryRange = false;
+  #transport: RemoteFileTransport;
+  #maxCacheChunkSize: number;
 
   static MAX_CACHE_CHUNK_SIZE = 1024 * 128;
   static MAX_CACHE_ITEMS_SIZE: number = 128;
   static RANGE_SCHEME_ORIGIN = 'http://rangefile.localhost';
   static RANGE_FETCH_TIMEOUT_MS = 15_000;
 
-  constructor(url: string, name?: string, type = '', lastModified = Date.now()) {
+  constructor(
+    url: string,
+    name?: string,
+    type = '',
+    lastModified = Date.now(),
+    transport: RemoteFileTransport = defaultRemoteFileTransport,
+  ) {
     const basename = url.split('/').pop() || 'remote-file';
     super([], name || basename, { type, lastModified });
     this.url = url;
     this.#name = name || basename;
     this.#type = type;
     this.#lastModified = lastModified;
+    this.#transport = transport;
+    this.#maxCacheChunkSize = transport.maxCacheChunkSize ?? RemoteFile.MAX_CACHE_CHUNK_SIZE;
   }
 
   /**
@@ -345,7 +366,7 @@ export class RemoteFile extends File implements ClosableFile {
   }
 
   async _open_with_head() {
-    const response = await fetch(this.url, { method: 'HEAD' });
+    const response = await this.#transport.fetch(this.url, { method: 'HEAD' });
     if (!response.ok) {
       throw new Error(`Failed to fetch file size: ${response.status}`);
     }
@@ -355,7 +376,9 @@ export class RemoteFile extends File implements ClosableFile {
   }
 
   async _open_with_range() {
-    const response = await fetch(this.url, { headers: { Range: `bytes=${0}-${1023}` } });
+    const response = await this.#transport.fetch(this.url, {
+      headers: { Range: `bytes=${0}-${1023}` },
+    });
     if (!response.ok) {
       throw new Error(`Failed to fetch file size: ${response.status}`);
     }
@@ -390,7 +413,7 @@ export class RemoteFile extends File implements ClosableFile {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), RemoteFile.RANGE_FETCH_TIMEOUT_MS);
     try {
-      return await fetch(url, { signal: controller.signal });
+      return await this.#transport.fetch(url, { signal: controller.signal });
     } catch (error) {
       if (controller.signal.aborted) {
         throw new Error('Timed out waiting for rangefile protocol response', { cause: error });
@@ -414,6 +437,7 @@ export class RemoteFile extends File implements ClosableFile {
   }
 
   async close(): Promise<void> {
+    this.#transport.close?.();
     this.#cache.clear();
     this.#order = [];
   }
@@ -424,7 +448,9 @@ export class RemoteFile extends File implements ClosableFile {
     // console.log(`Fetching range: ${start}-${end}, size: ${end - start + 1}`);
     const response = this.#queryRange
       ? await this.#fetchQueryRange(`${this.url}&start=${start}&end=${end}`)
-      : await fetch(this.url, { headers: { Range: `bytes=${start}-${end}` } });
+      : await this.#transport.fetch(this.url, {
+          headers: { Range: `bytes=${start}-${end}` },
+        });
     if (!response.ok) {
       throw new Error(`Failed to fetch range: ${response.status}`);
     }
@@ -450,7 +476,7 @@ export class RemoteFile extends File implements ClosableFile {
         offset += buffer.byteLength;
       }
       return combinedBuffer.buffer;
-    } else if (rangeSize > RemoteFile.MAX_CACHE_CHUNK_SIZE) {
+    } else if (rangeSize > this.#maxCacheChunkSize) {
       return this.fetchRangePart(start, end);
     } else {
       const cachedChunkStart = Array.from(this.#cache.keys()).find((chunkStart) => {
@@ -488,7 +514,7 @@ export class RemoteFile extends File implements ClosableFile {
     rangeSize: number,
   ): Promise<ArrayBuffer> {
     const chunkStart = Math.max(0, start - 1024);
-    const chunkEnd = Math.max(end, start + RemoteFile.MAX_CACHE_CHUNK_SIZE - 1024 - 1);
+    const chunkEnd = Math.max(end, start + this.#maxCacheChunkSize - 1024 - 1);
     const buffer = await this.fetchRangePart(chunkStart, chunkEnd);
 
     // Only one thread reaches here per unique range

@@ -453,7 +453,7 @@ pub fn open_reader_window(
     moke_book_id: Option<String>,
     restore_progress: Option<serde_json::Value>,
 ) -> Result<(), String> {
-    open_reader_window_with_debug(app, file, eink, false, moke_book_id, restore_progress)
+    open_reader_window_with_debug(app, file, eink, false, moke_book_id, restore_progress, None)
 }
 
 #[cfg(desktop)]
@@ -464,6 +464,7 @@ fn open_reader_window_with_debug(
     debug_panel: bool,
     moke_book_id: Option<String>,
     restore_progress: Option<serde_json::Value>,
+    moke_source_server_url: Option<String>,
 ) -> Result<(), String> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static READER_SEQ: AtomicUsize = AtomicUsize::new(0);
@@ -505,6 +506,8 @@ fn open_reader_window_with_debug(
     let moke_book_id_js = serde_json::to_string(&moke_book_id).map_err(|e| e.to_string())?;
     let restore_progress_js =
         serde_json::to_string(&restore_progress).map_err(|e| e.to_string())?;
+    let source_server_url_js =
+        serde_json::to_string(&moke_source_server_url).map_err(|e| e.to_string())?;
 
     let init_script = format!(
         r#"
@@ -513,6 +516,7 @@ fn open_reader_window_with_debug(
             window.__MOKE_EINK = {eink_js};
             window.__MOKE_DEBUG_PANEL = {debug_panel_js};
             window.__MOKE_BOOK_ID = {moke_book_id_js};
+            window.__MOKE_SOURCE_SERVER_URL = {source_server_url_js};
             window.__MOKE_RESTORE_PROGRESS = {restore_progress_js};
             window.addEventListener('DOMContentLoaded', function() {{
                 document.documentElement.classList.add('edge-to-edge');
@@ -569,6 +573,7 @@ async fn open_reader(
     debug_panel: Option<bool>,
     moke_book_id: Option<String>,
     restore_progress: Option<serde_json::Value>,
+    moke_source_server_url: Option<String>,
 ) -> Result<(), String> {
     open_reader_window_with_debug(
         &app,
@@ -577,6 +582,7 @@ async fn open_reader(
         debug_panel.unwrap_or(false),
         moke_book_id,
         restore_progress,
+        moke_source_server_url,
     )
 }
 

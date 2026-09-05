@@ -4,6 +4,7 @@ import { SchemaType } from '@/services/database/migrate';
 import { getOSPlatform, isValidURL } from '@/utils/misc';
 import { isSafariBrowser } from '@/utils/ua';
 import { RemoteFile } from '@/utils/file';
+import { createMokeRemoteSourceTransport } from '@/services/mokeRemoteSource';
 import { detectViewTransitionGroup, detectViewTransitionsAPI } from '@/utils/viewTransition';
 import { isPWA } from './environment';
 import { BaseAppService } from './appService';
@@ -83,7 +84,8 @@ const indexedDBFileSystem: FileSystem = {
   },
   async openFile(path: string, base: BaseDir, filename?: string) {
     if (isValidURL(path)) {
-      return await new RemoteFile(path, filename).open();
+      const transport = createMokeRemoteSourceTransport(path);
+      return await new RemoteFile(path, filename, '', Date.now(), transport ?? undefined).open();
     } else {
       const content = await this.readFile(path, base, 'binary');
       return new File([content], filename || path);
