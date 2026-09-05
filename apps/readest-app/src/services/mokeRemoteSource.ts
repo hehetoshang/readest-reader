@@ -3,6 +3,7 @@ import { mokeTauriRangeFetch } from '@/services/mokeTauriRangeFetch';
 import type { RemoteFileTransport } from '@/utils/file';
 
 const EPUB_MIME = 'application/epub+zip';
+const LEGACY_EPUB_MIME = 'application/octet-stream';
 const SAFE_REVISION = /^[A-Za-z0-9._~-]{1,128}$/;
 const SAFE_ETAG = /^[^\r\n]{1,256}$/;
 const RANGE_HEADER = /^bytes=(\d+)-(\d+)$/;
@@ -38,6 +39,7 @@ export interface MokeRemoteSourceErrorDetail {
 interface MokeRemoteSourceContext {
   url: string;
   mime: typeof EPUB_MIME;
+  responseMimes: readonly string[];
 }
 
 export type MokeRemoteFetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -102,21 +104,35 @@ export function validateMokeRemoteSource(
 
   const revisionValues = source.searchParams.getAll('revision');
   const queryKeys = [...source.searchParams.keys()];
+  const isBootstrapResource =
+    source.pathname === `/read/resource/${bookId}.epub` &&
+    queryKeys.length === 1 &&
+    queryKeys[0] === 'revision' &&
+    revisionValues.length === 1 &&
+    SAFE_REVISION.test(revisionValues[0] || '');
+  // Talebook Android opens this fixed authenticated file route directly.
+  // Supporting the same route keeps pre-bootstrap Talebook 3.7+ compatible;
+  // the transport still requires an exact 206 before Reader sees the source.
+  const isLegacyResource =
+    source.pathname === `/api/book/${bookId}.epub` &&
+    queryKeys.length === 0;
   if (
     source.origin !== origin ||
     source.username ||
     source.password ||
     source.hash ||
-    source.pathname !== `/read/resource/${bookId}.epub` ||
-    queryKeys.length !== 1 ||
-    queryKeys[0] !== 'revision' ||
-    revisionValues.length !== 1 ||
-    !SAFE_REVISION.test(revisionValues[0] || '')
+    (!isBootstrapResource && !isLegacyResource)
   ) {
     throw new MokeRemoteSourceError('online.response_invalid');
   }
 
-  return { url: source.href, mime: EPUB_MIME };
+  return {
+    url: source.href,
+    mime: EPUB_MIME,
+    responseMimes: isLegacyResource
+      ? [EPUB_MIME, LEGACY_EPUB_MIME]
+      : [EPUB_MIME],
+  };
 }
 
 export function isMokeRemoteSourceUrl(sourceUrl: string): boolean {
@@ -172,7 +188,7 @@ function validateResponseIdentity(response: Response, context: MokeRemoteSourceC
 
 function validateRepresentation(response: Response, context: MokeRemoteSourceContext): void {
   validateResponseIdentity(response, context);
-  if (normalizedMime(response.headers.get('content-type')) !== context.mime) {
+  if (!context.responseMimes.includes(normalizedMime(response.headers.get('content-type')))) {
     throw new MokeRemoteSourceError('online.mime_invalid', response.status);
   }
   const encoding = response.headers.get('content-encoding');
@@ -309,7 +325,7 @@ export function createMokeRemoteSourceTransport(
             const encoding = response.headers.get('content-encoding');
             const length = response.headers.get('content-length');
             const etag = response.headers.get('etag');
-            if (mime && mime !== context.mime) {
+            if (mime && !context.responseMimes.includes(mime)) {
               throw new MokeRemoteSourceError('online.mime_invalid', response.status);
             }
             if (encoding && encoding.toLowerCase() !== 'identity') {

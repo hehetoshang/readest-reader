@@ -25,14 +25,17 @@ Moke accepts server URLs only through its server configuration flow. Reader does
 
 ## Online source adapter
 
-An online EPUB is opened transiently from the Talebook bootstrap resource URL; it is never imported into Reader or Moke's offline library. Reader accepts this source only when all of the following hold:
+An online EPUB is opened transiently and is never imported into Reader or Moke's offline library. Moke prefers the authorization-specific Talebook bootstrap resource. If the bootstrap endpoint is absent (an ordinary unstructured 404), Moke follows Talebook Android's compatibility strategy and probes the fixed authenticated `/api/book/{mokeBookId}.epub` route. This supports pre-bootstrap Talebook releases whose download handler is backed by Tornado `StaticFileHandler` (3.7+), without weakening the Range requirement for still older releases.
+
+Reader accepts a source only when all of the following hold:
 
 - `mokeSourceServerUrl` is the exact current HTTP(S) server origin;
-- the source is same-origin `/read/resource/{mokeBookId}.epub` with one safe `revision` value;
-- HEAD returns `application/epub+zip`, a positive length, `Accept-Ranges: bytes` and an ETag;
-- each body request is an exact 206 response for the requested range with the same ETag, MIME and total size.
+- the source is either same-origin `/read/resource/{mokeBookId}.epub` with one safe `revision` value, or the exact query-free legacy `/api/book/{mokeBookId}.epub` path;
+- HEAD returns a positive length and ETag when those fields are present; bootstrap resources use `application/epub+zip`, while the legacy handler may use its historical `application/octet-stream` response;
+- a real `GET bytes=0-0` succeeds with exact `206`, length and total-size metadata before the parser receives the source;
+- each body request is an exact `206` response for the requested range with the same ETag, allowed MIME and total size.
 
-The transport uses the shared Tauri HTTP cookie jar, sets `maxRedirections: 0`, and never serializes cookies or tokens into the launch URL. A server that redirects, ignores Range, changes revision/ETag, or returns an unexpected MIME is rejected instead of being silently downloaded in full. Closing the transient file aborts active requests. Publication documents remain in Foliate sandbox frames and cannot invoke the top-level adapter.
+The transport uses the shared Tauri HTTP cookie jar, sets `maxRedirections: 0`, and never serializes cookies or tokens into the launch URL. A server that redirects, ignores Range, changes revision/ETag, or returns an unexpected MIME is rejected instead of being silently downloaded in full. In particular, Talebook 3.6 and older download handlers return a full `200` and therefore receive the explicit download fallback rather than being disguised as online streaming. Closing the transient file aborts active requests. Publication documents remain in Foliate sandbox frames and cannot invoke the top-level adapter.
 
 ## Native API
 

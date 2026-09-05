@@ -9,6 +9,7 @@ import {
 
 const SERVER = 'https://books.example';
 const SOURCE = `${SERVER}/read/resource/42.epub?revision=abc-123`;
+const LEGACY_SOURCE = `${SERVER}/api/book/42.epub`;
 
 function response(
   status: number,
@@ -40,6 +41,12 @@ describe('Moke online source authorization', () => {
     expect(validateMokeRemoteSource(SOURCE, SERVER, '42')).toEqual({
       url: SOURCE,
       mime: 'application/epub+zip',
+      responseMimes: ['application/epub+zip'],
+    });
+    expect(validateMokeRemoteSource(LEGACY_SOURCE, SERVER, '42')).toEqual({
+      url: LEGACY_SOURCE,
+      mime: 'application/epub+zip',
+      responseMimes: ['application/epub+zip', 'application/octet-stream'],
     });
 
     for (const invalid of [
@@ -49,6 +56,7 @@ describe('Moke online source authorization', () => {
       `${SERVER}/read/resource/42.epub?revision=a&revision=b`,
       `${SERVER}/read/resource/42.epub?revision=a&url=https://evil.example`,
       `${SERVER}/api/book/42.epub?revision=abc-123`,
+      `${SERVER}/api/book/41.epub`,
       `https://user:secret@books.example/read/resource/42.epub?revision=abc-123`,
     ]) {
       expect(() => validateMokeRemoteSource(invalid, SERVER, '42')).toThrow(MokeRemoteSourceError);
@@ -103,6 +111,58 @@ describe('Moke online source authorization', () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('range')).toBe('bytes=0-0');
+  });
+
+  it('accepts Talebook Android\'s legacy EPUB route only after an octet-stream 206 probe', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response(
+          200,
+          {
+            'content-type': 'application/octet-stream',
+            'content-length': '1000',
+            'accept-ranges': 'bytes',
+            etag: '"legacy-one"',
+          },
+          null,
+          LEGACY_SOURCE,
+        ),
+      )
+      .mockResolvedValueOnce(
+        response(
+          206,
+          {
+            'content-type': 'application/octet-stream',
+            'content-length': '1',
+            'content-range': 'bytes 0-0/1000',
+            etag: '"legacy-one"',
+          },
+          new Uint8Array([0x50]),
+          LEGACY_SOURCE,
+        ),
+      )
+      .mockResolvedValueOnce(
+        response(
+          206,
+          {
+            'content-type': 'application/octet-stream',
+            'content-length': '4',
+            'content-range': 'bytes 996-999/1000',
+            etag: '"legacy-one"',
+          },
+          new Uint8Array([0, 1, 2, 3]),
+          LEGACY_SOURCE,
+        ),
+      );
+    const transport = createMokeRemoteSourceTransport(LEGACY_SOURCE, fetchMock)!;
+
+    const head = await transport.fetch(LEGACY_SOURCE, { method: 'HEAD' });
+    expect(head.headers.get('content-type')).toBe('application/epub+zip');
+    const tail = await transport.fetch(LEGACY_SOURCE, {
+      headers: { Range: 'bytes=996-999' },
+    });
+    await expect(tail.arrayBuffer()).resolves.toHaveProperty('byteLength', 4);
   });
 
   it('rejects a server that ignores Range before reading its full body', async () => {
