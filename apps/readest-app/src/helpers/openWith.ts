@@ -11,6 +11,7 @@ declare global {
     __MOKE_BOOK_ID?: string | null;
     __MOKE_SERVER_URL?: string | null;
     __MOKE_SOURCE_SERVER_URL?: string | null;
+    __MOKE_RUNTIME_PLATFORM?: string | null;
     __MOKE_ONLINE_SOURCE_METRICS?: {
       totalBytes: number;
       transferredBytes: number;

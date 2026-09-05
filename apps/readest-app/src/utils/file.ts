@@ -58,6 +58,8 @@ export interface ClosableFile extends File {
 export interface RemoteFileTransport {
   fetch(url: string, init?: RequestInit): Promise<Response>;
   close?(): void;
+  /** Force a real HEAD even on Android, where ordinary asset URLs use Range. */
+  openWithHead?: boolean;
   /** Optional source-specific cache window; online books keep this small. */
   maxCacheChunkSize?: number;
 }
@@ -305,6 +307,7 @@ export class RemoteFile extends File implements ClosableFile {
   // of a `Range` header — see fromNativePath().
   #queryRange = false;
   #transport: RemoteFileTransport;
+  #openWithHead: boolean;
   #maxCacheChunkSize: number;
 
   static MAX_CACHE_CHUNK_SIZE = 1024 * 128;
@@ -326,6 +329,7 @@ export class RemoteFile extends File implements ClosableFile {
     this.#type = type;
     this.#lastModified = lastModified;
     this.#transport = transport;
+    this.#openWithHead = transport.openWithHead ?? false;
     this.#maxCacheChunkSize = transport.maxCacheChunkSize ?? RemoteFile.MAX_CACHE_CHUNK_SIZE;
   }
 
@@ -429,11 +433,10 @@ export class RemoteFile extends File implements ClosableFile {
       return this._open_with_query();
     }
     // FIXME: currently HEAD request in asset protocol is not supported on Android
-    if (getOSPlatform() === 'android') {
+    if (getOSPlatform() === 'android' && !this.#openWithHead) {
       return this._open_with_range();
-    } else {
-      return this._open_with_head();
     }
+    return this._open_with_head();
   }
 
   async close(): Promise<void> {
