@@ -64,11 +64,7 @@ describe('Moke online source authorization', () => {
   });
 
   it('canonicalizes equivalent persisted server origins before authorizing the source', () => {
-    for (const serverUrl of [
-      `${SERVER}/`,
-      `${SERVER}///`,
-      ' HTTPS://BOOKS.EXAMPLE:443/ ',
-    ]) {
+    for (const serverUrl of [`${SERVER}/`, `${SERVER}///`, ' HTTPS://BOOKS.EXAMPLE:443/ ']) {
       expect(validateMokeRemoteSource(LEGACY_SOURCE, serverUrl, ' 42 ')).toEqual({
         url: LEGACY_SOURCE,
         mime: 'application/epub+zip',
@@ -139,7 +135,7 @@ describe('Moke online source authorization', () => {
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('range')).toBe('bytes=0-0');
   });
 
-  it('accepts Talebook Android\'s legacy EPUB route only after an octet-stream 206 probe', async () => {
+  it("accepts Talebook Android's legacy EPUB route only after an octet-stream 206 probe", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -357,7 +353,7 @@ describe('Moke online source authorization', () => {
     expect(bodyRead).not.toHaveBeenCalled();
   });
 
-  it('keeps the caller abort signal attached until a returned range body finishes', async () => {
+  it('keeps cancellation attached while a range body is pending', async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(response(405, { 'content-type': 'text/plain' }))
@@ -388,14 +384,27 @@ describe('Moke online source authorization', () => {
     const transport = createMokeRemoteSourceTransport(SOURCE, fetchMock)!;
     await transport.fetch(SOURCE, { method: 'HEAD' });
 
+    const pendingBody = new Promise<ArrayBuffer>(() => {});
+    const rangeResponse = response(206, {
+      'content-type': 'application/epub+zip',
+      'content-length': '4',
+      'content-range': 'bytes 4-7/1000',
+      etag: '"one"',
+    });
+    Object.defineProperty(rangeResponse, 'arrayBuffer', {
+      configurable: true,
+      value: () => pendingBody,
+    });
+    fetchMock.mockReset().mockResolvedValue(rangeResponse);
     const controller = new AbortController();
-    await transport.fetch(SOURCE, {
+    const pending = transport.fetch(SOURCE, {
       headers: { Range: 'bytes=4-7' },
       signal: controller.signal,
     });
+    await Promise.resolve();
     controller.abort();
-
-    expect(fetchMock.mock.calls[2]?.[1]?.signal?.aborted).toBe(true);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
     transport.close?.();
   });
 
@@ -414,7 +423,7 @@ describe('Moke online source authorization', () => {
     const pending = transport.fetch(SOURCE, { method: 'HEAD' });
     await Promise.resolve();
     transport.close?.();
-    await expect(pending).rejects.toMatchObject({ code: 'online.network' });
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
   });
 
   it('maps only normalized error metadata to the host event', () => {
@@ -428,4 +437,61 @@ describe('Moke online source authorization', () => {
     });
     expect(mokeRemoteSourceErrorDetail(new Error(SOURCE))).toBeNull();
   });
+});
+
+it.each([
+  401, 403, 404, 409, 412, 429, 500,
+])('does not automatically retry status %i', async (status) => {
+  const fetch = vi.fn(async () => response(status, {}));
+  const transport = createMokeRemoteSourceTransport(SOURCE, fetch)!;
+  await expect(transport.fetch(SOURCE, { method: 'HEAD' })).rejects.toBeInstanceOf(
+    MokeRemoteSourceError,
+  );
+  expect(fetch).toHaveBeenCalledOnce();
+  transport.close?.();
+});
+
+it('retries a disconnected body with the same validated range', async () => {
+  let reads = 0;
+  const ranges: string[] = [];
+  const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'HEAD') return response(405, {});
+    const range = new Headers(init?.headers).get('range')!;
+    ranges.push(range);
+    if (range === 'bytes=0-0')
+      return response(
+        206,
+        {
+          'content-type': 'application/epub+zip',
+          'content-length': '1',
+          'content-range': 'bytes 0-0/1000',
+          etag: '"one"',
+        },
+        new Uint8Array([0]),
+      );
+    const result = response(
+      206,
+      {
+        'content-type': 'application/epub+zip',
+        'content-length': '4',
+        'content-range': 'bytes 4-7/1000',
+        etag: '"one"',
+      },
+      new Uint8Array([4, 5, 6, 7]),
+    );
+    if (++reads === 1)
+      Object.defineProperty(result, 'arrayBuffer', {
+        configurable: true,
+        value: async () => {
+          throw new TypeError('connection closed');
+        },
+      });
+    return result;
+  });
+  const transport = createMokeRemoteSourceTransport(SOURCE, fetch)!;
+  await transport.fetch(SOURCE, { method: 'HEAD' });
+  const result = await transport.fetch(SOURCE, { headers: { Range: 'bytes=4-7' } });
+  expect(new Uint8Array(await result.arrayBuffer())).toEqual(new Uint8Array([4, 5, 6, 7]));
+  expect(ranges).toEqual(['bytes=0-0', 'bytes=4-7', 'bytes=4-7']);
+  transport.close?.();
 });

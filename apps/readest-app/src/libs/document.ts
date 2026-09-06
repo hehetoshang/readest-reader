@@ -1,5 +1,6 @@
 import { BookFormat } from '@/types/book';
 import { Collection, Contributor, Identifier, LanguageMap } from '@/utils/book';
+import { mokeRemoteSourceErrorDetail } from '@/services/mokeRemoteSource';
 import { configureZip } from '@/utils/zip';
 import * as epubcfi from 'foliate-js/epubcfi.js';
 
@@ -327,13 +328,19 @@ export class DocumentLoader {
     // chapter strings in memory (a long book is megabytes of text). This is
     // safe because the only consumer that cares about reuse — nav
     // computation — issues both calls in the same microtask span.
+    let onlineLoadError: unknown;
+    let opening = true;
     const inflight = new Map<string, Promise<string | null>>();
     const dedupedZipLoadText = (name: string, ...args: [string?]): Promise<string | null> => {
+      if (onlineLoadError) return Promise.reject(onlineLoadError);
       const existing = inflight.get(name);
       if (existing) return existing;
       const p =
         (zipLoadText(name, ...args) as Promise<string | null> | null) ?? Promise.resolve(null);
-      const wrapped = Promise.resolve(p).finally(() => {
+      const wrapped = Promise.resolve(p).catch((error) => {
+        if (opening && mokeRemoteSourceErrorDetail(error)) onlineLoadError ??= error;
+        throw error;
+      }).finally(() => {
         // Release as soon as the promise settles; subsequent independent
         // reads will re-inflate (intentional — we don't want a nav-time
         // cache to hold the whole book in RAM).
@@ -355,7 +362,15 @@ export class DocumentLoader {
       ? (name: string) => sizesOverride.get(name) ?? getEntry(name)?.uncompressedSize ?? 0
       : (name: string) => getEntry(name)?.uncompressedSize ?? 0;
 
-    return { entries, loadText, loadBlob, getSize, getComment, sha1: undefined };
+    return {
+      entries, loadText, loadBlob, getSize, getComment, sha1: undefined,
+      checkOnlineLoadError() {
+        opening = false;
+        // Foliate tolerates missing/malformed optional nav files. A network
+        // failure is different: do not silently open with an incomplete TOC.
+        if (onlineLoadError) throw onlineLoadError;
+      },
+    };
   }
 
   private isCBZ(): boolean {
@@ -453,6 +468,7 @@ export class DocumentLoader {
         } else {
           const { EPUB } = await import('foliate-js/epub.js');
           book = await new EPUB(loader).init();
+          loader.checkOnlineLoadError();
           format = 'EPUB';
         }
       } else if (await this.isPDF()) {

@@ -485,7 +485,7 @@ export class RemoteFile extends File implements ClosableFile {
       const cachedChunkStart = Array.from(this.#cache.keys()).find((chunkStart) => {
         const buffer = this.#cache.get(chunkStart)!;
         const bufferSize = buffer.byteLength;
-        return start >= chunkStart && end <= chunkStart + bufferSize;
+        return start >= chunkStart && end < chunkStart + bufferSize;
       });
       if (cachedChunkStart !== undefined) {
         this.#updateAccessOrder(cachedChunkStart);

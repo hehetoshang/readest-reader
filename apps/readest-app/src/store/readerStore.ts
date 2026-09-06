@@ -1,3 +1,4 @@
+import { isMokeRemoteSourceUrl } from '@/services/mokeRemoteSource';
 import { create } from 'zustand';
 
 import {
@@ -214,6 +215,7 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         },
       },
     }));
+    let openedFile: File | null = null;
     try {
       const appService = await envConfig.getAppService();
       const { settings } = useSettingsStore.getState();
@@ -258,6 +260,7 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         } else {
           const content = (await appService.loadBookContent(book)) as BookContent;
           file = content.file;
+          openedFile = file;
           const doc = await new DocumentLoader(file, {
             nativeFilePath: content.nativeFilePath ?? undefined,
           }).open();
@@ -286,8 +289,11 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       config.booknotes =
         config.booknotes?.filter((booknote) => booknote.cfi || isChapterOnlyBookNote(booknote)) ??
         [];
+      // Remote EPUB already provides nav/NCX links. Computing fragment CFIs
+      // scans every chapter and defeats on-demand reading on a cold open.
+      const onlineSource = isMokeRemoteSourceUrl(book.url || '');
       // Load cached book navigation (TOC + section fragments) or compute and persist.
-      if (book.format === 'EPUB' && bookDoc.rendition?.layout !== 'pre-paginated') {
+      if (!onlineSource && book.format === 'EPUB' && bookDoc.rendition?.layout !== 'pre-paginated') {
         const cachedNav = await cachedNavPromise;
         if (isBookNavCacheCurrent(cachedNav) && process.env['NODE_ENV'] === 'production') {
           hydrateBookNav(bookDoc, cachedNav);
@@ -385,6 +391,8 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         });
       }
     } catch (error) {
+      const closable = openedFile as (File & { close?: () => Promise<void> }) | null;
+      await closable?.close?.().catch(() => undefined);
       pendingNavCacheWrites.delete(id);
       console.error(error);
       set((state) => ({

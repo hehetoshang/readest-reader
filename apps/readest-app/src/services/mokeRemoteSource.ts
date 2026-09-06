@@ -1,3 +1,4 @@
+import { retryOnlineRead } from '@/services/mokeOnlineRetry';
 import { isTauriAppPlatform } from '@/services/environment';
 import { mokeTauriRangeFetch } from '@/services/mokeTauriRangeFetch';
 import type { RemoteFileTransport } from '@/utils/file';
@@ -8,6 +9,7 @@ const SAFE_REVISION = /^[A-Za-z0-9._~-]{1,128}$/;
 const SAFE_ETAG = /^[^\r\n]{1,256}$/;
 const RANGE_HEADER = /^bytes=(\d+)-(\d+)$/;
 const CONTENT_RANGE_HEADER = /^bytes (\d+)-(\d+)\/(\d+)$/;
+let metricsSource: string | null = null;
 
 export type MokeRemoteSourceErrorCode =
   | 'online.auth_required'
@@ -118,8 +120,7 @@ export function validateMokeRemoteSource(
   // Supporting the same route keeps pre-bootstrap Talebook 3.7+ compatible;
   // the transport still requires an exact 206 before Reader sees the source.
   const isLegacyResource =
-    source.pathname === `/api/book/${normalizedBookId}.epub` &&
-    queryKeys.length === 0;
+    source.pathname === `/api/book/${normalizedBookId}.epub` && queryKeys.length === 0;
   if (
     source.origin !== origin ||
     source.username ||
@@ -133,9 +134,7 @@ export function validateMokeRemoteSource(
   return {
     url: source.href,
     mime: EPUB_MIME,
-    responseMimes: isLegacyResource
-      ? [EPUB_MIME, LEGACY_EPUB_MIME]
-      : [EPUB_MIME],
+    responseMimes: isLegacyResource ? [EPUB_MIME, LEGACY_EPUB_MIME] : [EPUB_MIME],
   };
 }
 
@@ -153,6 +152,12 @@ export function isMokeRemoteSourceUrl(sourceUrl: string): boolean {
 }
 
 export function mokeRemoteSourceErrorDetail(error: unknown): MokeRemoteSourceErrorDetail | null {
+  // Importers add context with Error.cause; retain the typed online failure.
+  const seen = new Set<unknown>();
+  while (error instanceof Error && !(error instanceof MokeRemoteSourceError) && !seen.has(error)) {
+    seen.add(error);
+    error = error.cause;
+  }
   if (!(error instanceof MokeRemoteSourceError)) return null;
   return {
     code: error.code,
@@ -242,22 +247,33 @@ export function createMokeRemoteSourceTransport(
   if (!bookId) throw new MokeRemoteSourceError('online.response_invalid');
 
   const context = validateMokeRemoteSource(sourceUrl, serverUrl, String(bookId));
-  window.__MOKE_ONLINE_SOURCE_METRICS = {
-    totalBytes: 0,
-    transferredBytes: 0,
-    rangeRequests: 0,
-  };
+  // Import and rendering reopen the same URL. Include both phases instead of
+  // resetting the transfer counters at the rendering handoff.
+  if (metricsSource !== context.url || !window.__MOKE_ONLINE_SOURCE_METRICS) {
+    metricsSource = context.url;
+    window.__MOKE_ONLINE_SOURCE_METRICS = {
+      totalBytes: 0,
+      transferredBytes: 0,
+      rangeRequests: 0,
+    };
+  }
   const activeControllers = new Map<AbortController, () => void>();
   let expectedSize: number | null = null;
   let expectedEtag: string | null = null;
 
-  const releaseAfterBody = (response: Response, expectedLength: number, cleanup: () => void) => {
+  const releaseAfterBody = (
+    response: Response,
+    expectedLength: number,
+    cleanup: () => void,
+    signal: AbortSignal,
+  ) => {
     const readBody = response.arrayBuffer.bind(response);
     Object.defineProperty(response, 'arrayBuffer', {
       configurable: true,
       value: async () => {
         try {
           const body = await readBody();
+          if (signal.aborted) throw new DOMException('Online read cancelled', 'AbortError');
           if (body.byteLength !== expectedLength) {
             throw new MokeRemoteSourceError('online.response_invalid', response.status);
           }
@@ -274,7 +290,8 @@ export function createMokeRemoteSourceTransport(
     });
   };
 
-  return {
+  const lifetime = new AbortController();
+  const transport: RemoteFileTransport = {
     // Moke's native transport supports HEAD on Android. Force that path so the
     // authoritative one-byte probe establishes size/ETag before parser ranges.
     openWithHead: true,
@@ -307,6 +324,7 @@ export function createMokeRemoteSourceTransport(
         externalSignal?.removeEventListener('abort', forwardAbort);
       };
       activeControllers.set(controller, cleanupController);
+      controller.signal.addEventListener('abort', cleanupController, { once: true });
       externalSignal?.addEventListener('abort', forwardAbort, { once: true });
       if (externalSignal?.aborted) controller.abort();
 
@@ -392,6 +410,8 @@ export function createMokeRemoteSourceTransport(
           }
 
           const firstByte = await response.arrayBuffer();
+          if (controller.signal.aborted)
+            throw new DOMException('Online read cancelled', 'AbortError');
           if (firstByte.byteLength !== 1) {
             throw new MokeRemoteSourceError('online.response_invalid', response.status);
           }
@@ -459,19 +479,76 @@ export function createMokeRemoteSourceTransport(
         if (Number(response.headers.get('content-length')) !== expectedLength) {
           throw new MokeRemoteSourceError('online.response_invalid', response.status);
         }
-        releaseAfterBody(response, expectedLength, cleanupController);
+        releaseAfterBody(response, expectedLength, cleanupController, controller.signal);
         return response;
       } catch (error) {
         cleanupController();
         if (response) await abortResponse(response);
+        if (controller.signal.aborted)
+          throw new DOMException('Online read cancelled', 'AbortError');
         if (error instanceof MokeRemoteSourceError) throw error;
         throw new MokeRemoteSourceError('online.network');
       }
     },
     close() {
+      lifetime.abort();
       for (const [controller, cleanup] of [...activeControllers]) {
         controller.abort();
         cleanup();
+      }
+    },
+  };
+
+  return {
+    ...transport,
+    async fetch(url, init = {}) {
+      const operation = new AbortController();
+      const cancel = () => operation.abort();
+      const signals = [lifetime.signal, init.signal].filter(
+        (signal): signal is AbortSignal => !!signal,
+      );
+      for (const signal of signals) {
+        signal.addEventListener('abort', cancel, { once: true });
+        if (signal.aborted) cancel();
+      }
+      try {
+        return await retryOnlineRead(
+          async (signal) => {
+            const response = await transport.fetch(url, { ...init, signal });
+            if ((init.method || 'GET').toUpperCase() === 'HEAD') return response;
+            // Consume only the validated Range so body failures can retry without
+            // giving ZIP partial data. RemoteFile splits large reads into 1 MB ranges.
+            try {
+              const body = await response.arrayBuffer();
+              const result = new Response(body, {
+                status: response.status,
+                headers: response.headers,
+              });
+              Object.defineProperty(result, 'url', { value: response.url });
+              return result;
+            } catch (error) {
+              await abortResponse(response);
+              if (error instanceof MokeRemoteSourceError) throw error;
+              throw new MokeRemoteSourceError('online.network');
+            }
+          },
+          (error) => {
+            if (error instanceof DOMException && error.name === 'TimeoutError') return true;
+            return (
+              error instanceof MokeRemoteSourceError &&
+              error.code === 'online.network' &&
+              (error.status === undefined || [408, 502, 503, 504].includes(error.status))
+            );
+          },
+          operation.signal,
+        );
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'TimeoutError') {
+          throw new MokeRemoteSourceError('online.network');
+        }
+        throw error;
+      } finally {
+        for (const signal of signals) signal.removeEventListener('abort', cancel);
       }
     },
   };
