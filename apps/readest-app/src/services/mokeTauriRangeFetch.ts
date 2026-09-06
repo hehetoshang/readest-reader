@@ -53,6 +53,32 @@ export function createMokeTauriRangeFetch(invoke: MokeTauriInvoke = tauriInvoke)
       throw new Error('online.request_invalid');
     }
 
+    const started = Date.now();
+    let stage = 'create';
+    let status: number | null = null;
+    let receivedBytes = 0;
+    let chunks = 0;
+    let reported = false;
+    const reportFailure = (reason: 'timeout' | 'native-error') => {
+      if (reported) return;
+      reported = true;
+      // Never log URLs, query tokens, cookies, native error strings, or book bytes.
+      const range = headers.find(([name]) => name.toLowerCase() === 'range')?.[1];
+      console.warn(
+        '[online-range] ' +
+          JSON.stringify({
+            reason,
+            stage,
+            method,
+            status,
+            range: range && /^bytes=\d+-\d+$/.test(range) ? range : null,
+            receivedBytes,
+            chunks,
+            elapsedMs: Date.now() - started,
+          }),
+      );
+    };
+
     let requestRid: number | null = null;
     let responseRid: number | null = null;
     let settled = false;
@@ -70,6 +96,7 @@ export function createMokeTauriRangeFetch(invoke: MokeTauriInvoke = tauriInvoke)
       }
     };
     const abort = () => {
+      if (init.signal?.reason?.name === 'TimeoutError') reportFailure('timeout');
       void cancelNative();
       try {
         streamController?.error(new DOMException('Request aborted', 'AbortError'));
@@ -100,10 +127,13 @@ export function createMokeTauriRangeFetch(invoke: MokeTauriInvoke = tauriInvoke)
         throw new DOMException('Request aborted', 'AbortError');
       }
 
+      stage = 'headers';
       const metadata = await invoke<PluginFetchResponse>('plugin:http|fetch_send', {
         rid: requestRid,
       });
       settled = true;
+      status = metadata.status;
+      stage = 'body-idle';
       responseRid = metadata.rid;
       if (init.signal?.aborted) {
         await cancelNative();
@@ -111,6 +141,7 @@ export function createMokeTauriRangeFetch(invoke: MokeTauriInvoke = tauriInvoke)
       }
 
       if (method === 'HEAD' || BODYLESS_STATUS.has(metadata.status)) {
+        stage = 'cleanup';
         await cancelNative();
         init.signal?.removeEventListener('abort', abort);
         return responseWithNativeMetadata(null, metadata);
@@ -127,22 +158,33 @@ export function createMokeTauriRangeFetch(invoke: MokeTauriInvoke = tauriInvoke)
               return;
             }
             try {
-              const data = new Uint8Array(
-                await invoke<ArrayBuffer | number[]>('plugin:http|fetch_read_body', {
-                  rid: responseRid,
-                }),
-              );
-              if (data.byteLength === 0) throw new Error('online.response_invalid');
-              const completed = data[data.byteLength - 1] === 1;
-              const chunk = data.slice(0, -1);
-              if (chunk.byteLength) controller.enqueue(chunk);
-              if (completed) {
-                responseRid = null;
-                streamController = null;
-                init.signal?.removeEventListener('abort', abort);
-                controller.close();
+              // The plugin may deliver [0]: an empty HTTP chunk, not EOF.
+              // With highWaterMark: 0, returning without enqueue/close stalls
+              // the pending read. Keep pulling until data or the [1] EOF marker.
+              while (responseRid !== null) {
+                stage = 'body-read';
+                const data = new Uint8Array(
+                  await invoke<ArrayBuffer | number[]>('plugin:http|fetch_read_body', {
+                    rid: responseRid,
+                  }),
+                );
+                if (data.byteLength === 0) throw new Error('online.response_invalid');
+                const completed = data[data.byteLength - 1] === 1;
+                const chunk = data.slice(0, -1);
+                receivedBytes += chunk.byteLength;
+                chunks += 1;
+                stage = 'body-idle';
+                if (chunk.byteLength) controller.enqueue(chunk);
+                if (completed) {
+                  responseRid = null;
+                  streamController = null;
+                  init.signal?.removeEventListener('abort', abort);
+                  controller.close();
+                }
+                if (chunk.byteLength || completed) return;
               }
             } catch (error) {
+              if (!init.signal?.aborted) reportFailure('native-error');
               await cancelNative();
               streamController = null;
               init.signal?.removeEventListener('abort', abort);
@@ -160,6 +202,7 @@ export function createMokeTauriRangeFetch(invoke: MokeTauriInvoke = tauriInvoke)
 
       return responseWithNativeMetadata(body, metadata);
     } catch (error) {
+      if (!init.signal?.aborted) reportFailure('native-error');
       await cancelNative();
       init.signal?.removeEventListener('abort', abort);
       throw error;

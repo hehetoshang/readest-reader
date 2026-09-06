@@ -45,6 +45,37 @@ three exhausted nav attempts, timeout cancellation, no retry after close,
 non-retryable status codes, typed importer errors, and avoiding whole-book scans
 in `readerStore`. Transfer counters include both import and render opens.
 
+## Native empty-chunk regression (2026-09-06)
+
+A developer-reported legacy endpoint was tested through the actual Moke debug
+binary, tauri-plugin-http 2.5.9, and Linux WebKitGTK under Xvfb. The native bridge
+was injected into a minimal local page; this isolates transport from UI lifecycle.
+The server returned exact 206 ranges promptly. A one-byte read completed, but
+15,360-byte and 65,536-byte reads stalled for the full 15-second attempt timeout.
+
+The native plugin returned all requested bytes, then `[0]`: an empty, nonterminal
+HTTP chunk. `[1]` is the separate EOF marker. With `highWaterMark: 0`, the bridge's
+`pull()` returned without enqueueing or closing on `[0]`, leaving the pending
+consumer waiting forever. Retrying the same read only repeated the stall.
+Both Moke and Reader now continue pulling past empty nonterminal chunks until
+data or EOF arrives, while retaining cancellation and header validation.
+
+After the fix the same 15,360-byte and 65,536-byte native reads completed in
+31 ms and 34 ms in one measured run, including EOF. A separate native test using
+Reader's `RemoteFile` and source transport with real zip.js/Foliate parsed the
+reported EPUB: 10 TOC entries, 29 sections, all 10 TOC targets resolved, and a
+target chapter loaded. It took 420 ms and 7 successful range requests totaling
+71,242 payload bytes out of a 5,840,652-byte book. These are single-run local
+measurements, not a latency guarantee or a rendered-reader/UI test.
+
+`mokeTauriRangeFetch.test.ts` covers empty chunks before, between and after data;
+the equivalent Moke regression fails with the old bridge and passes with the fix.
+Timeout diagnostics identify the native phase, response status, range, received
+byte count and elapsed time. Retry diagnostics report the attempt/backoff; neither
+logs URLs, credentials, native error strings or publication contents. Native
+filesystem parsers also reject remote URLs, avoiding the unrelated HTTPS
+`file not found` fallback warning while keeping local EPUB/MOBI parsing.
+
 ## Reproduce
 
 From the Reader repository root:

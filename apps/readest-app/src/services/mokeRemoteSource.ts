@@ -318,7 +318,7 @@ export function createMokeRemoteSourceTransport(
 
       const controller = new AbortController();
       const externalSignal = init.signal;
-      const forwardAbort = () => controller.abort();
+      const forwardAbort = () => controller.abort(externalSignal?.reason);
       const cleanupController = () => {
         activeControllers.delete(controller);
         externalSignal?.removeEventListener('abort', forwardAbort);
@@ -326,7 +326,7 @@ export function createMokeRemoteSourceTransport(
       activeControllers.set(controller, cleanupController);
       controller.signal.addEventListener('abort', cleanupController, { once: true });
       externalSignal?.addEventListener('abort', forwardAbort, { once: true });
-      if (externalSignal?.aborted) controller.abort();
+      if (externalSignal?.aborted) forwardAbort();
 
       let response: Response | undefined;
       try {

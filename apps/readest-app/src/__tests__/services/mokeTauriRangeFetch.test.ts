@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { retryOnlineRead } from '@/services/mokeOnlineRetry';
 import { createMokeTauriRangeFetch, type MokeTauriInvoke } from '@/services/mokeTauriRangeFetch';
 
 const SOURCE = 'http://127.0.0.1:39209/read/resource/10.epub?revision=safe';
@@ -110,4 +111,89 @@ describe('Moke raw Tauri range transport', () => {
     });
     expect(invoke).not.toHaveBeenCalledWith('plugin:http|fetch_read_body', expect.anything());
   });
+});
+
+for (const blockedStage of ['create', 'headers', 'body-read']) {
+  it(`reports ${blockedStage} on timeout without logging URLs`, async () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let release: (value: unknown) => void = () => {};
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const metadata = {
+      status: 206,
+      statusText: 'Partial Content',
+      url: SOURCE,
+      headers: [['content-length', '1']],
+      rid: 21,
+    };
+    const invoke = vi.fn(async (command: string) => {
+      if (command === 'plugin:http|fetch') return blockedStage === 'create' ? gate : 20;
+      if (command === 'plugin:http|fetch_send') return blockedStage === 'headers' ? gate : metadata;
+      if (command === 'plugin:http|fetch_read_body') return gate;
+      return undefined;
+    });
+    try {
+      await expect(
+        retryOnlineRead(
+          async (signal) => {
+            const response = await createMokeTauriRangeFetch(invoke as MokeTauriInvoke)(SOURCE, {
+              headers: { Range: 'bytes=0-0' },
+              signal,
+            });
+            return response.arrayBuffer();
+          },
+          () => false,
+          new AbortController().signal,
+          10,
+        ),
+      ).rejects.toMatchObject({ name: 'TimeoutError' });
+      const logs = warnings.mock.calls.map(([line]) => String(line));
+      const line = logs.find((line) => line.startsWith('[online-range] '));
+      expect(JSON.parse(line!.slice(15))).toMatchObject({
+        stage: blockedStage,
+        reason: 'timeout',
+        range: 'bytes=0-0',
+        receivedBytes: 0,
+        status: blockedStage === 'body-read' ? 206 : null,
+      });
+      expect(logs.join('')).not.toContain(SOURCE);
+      expect(logs.join('')).not.toContain('revision=');
+    } finally {
+      release(blockedStage === 'create' ? 20 : blockedStage === 'headers' ? metadata : [1]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      warnings.mockRestore();
+    }
+  });
+}
+
+it('skips empty nonterminal native chunks before, between and after data', async () => {
+  const chunks = [[0], [0x50, 0], [0], [0x4b, 0], [0], [1]];
+  const invoke = async (command: string) => {
+    if (command === 'plugin:http|fetch') return 30;
+    if (command === 'plugin:http|fetch_send')
+      return {
+        status: 206,
+        statusText: 'Partial Content',
+        url: SOURCE,
+        headers: [['content-length', '2']],
+        rid: 31,
+      };
+    if (command === 'plugin:http|fetch_read_body') return chunks.shift();
+    return undefined;
+  };
+  const body = await retryOnlineRead(
+    async (signal) => {
+      const response = await createMokeTauriRangeFetch(invoke as MokeTauriInvoke)(SOURCE, {
+        headers: { Range: 'bytes=0-1' },
+        signal,
+      });
+      return response.arrayBuffer();
+    },
+    () => false,
+    new AbortController().signal,
+    200,
+  );
+  expect(new Uint8Array(body)).toEqual(new Uint8Array([0x50, 0x4b]));
+  expect(chunks).toHaveLength(0);
 });

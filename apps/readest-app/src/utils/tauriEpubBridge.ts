@@ -32,13 +32,14 @@
 // Avoids ferrying multi-MB blobs across the JS<->Rust IPC boundary
 // and is a no-op on the web platform.
 import { invoke } from '@tauri-apps/api/core';
+import { isNativeBookPath } from './nativeBookPath';
 import { isTauriAppPlatform } from '@/services/environment';
 import type { BookDoc, BookMetadata } from '@/libs/document';
 
 // ─── shared helpers ──────────────────────────────────────────────────
 
 const isEligibleEpubPath = (filePath: string | undefined): filePath is string =>
-  !!filePath && isTauriAppPlatform() && /\.epub$/i.test(filePath);
+  !!filePath && isTauriAppPlatform() && isNativeBookPath(filePath) && /\.epub$/i.test(filePath);
 
 /**
  * Convert a `Vec<u8>` returned by Rust over Tauri's IPC into a plain
