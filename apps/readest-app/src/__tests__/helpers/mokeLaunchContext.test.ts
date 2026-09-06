@@ -57,6 +57,14 @@ describe('bootstrapMokeLaunchContext', () => {
     expect(window.__MOKE_SERVER_URL).toBeNull();
   });
 
+  it('carries the host runtime used for exact mobile navigation ACL calls', () => {
+    window.history.replaceState({}, '', '/reader?moke=1&mokeBookId=42&mokeRuntimePlatform=ohos');
+
+    bootstrapMokeLaunchContext();
+
+    expect(window.__MOKE_RUNTIME_PLATFORM).toBe('ohos');
+  });
+
   it('forwards the Moke debug panel launch flag', () => {
     window.history.replaceState({}, '', '/reader?moke=1&mokeDebug=1&mokeBookId=42');
 

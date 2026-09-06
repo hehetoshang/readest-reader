@@ -1,11 +1,15 @@
+import { retryOnlineRead } from '@/services/mokeOnlineRetry';
 import { isTauriAppPlatform } from '@/services/environment';
+import { mokeTauriRangeFetch } from '@/services/mokeTauriRangeFetch';
 import type { RemoteFileTransport } from '@/utils/file';
 
 const EPUB_MIME = 'application/epub+zip';
+const LEGACY_EPUB_MIME = 'application/octet-stream';
 const SAFE_REVISION = /^[A-Za-z0-9._~-]{1,128}$/;
 const SAFE_ETAG = /^[^\r\n]{1,256}$/;
 const RANGE_HEADER = /^bytes=(\d+)-(\d+)$/;
 const CONTENT_RANGE_HEADER = /^bytes (\d+)-(\d+)\/(\d+)$/;
+let metricsSource: string | null = null;
 
 export type MokeRemoteSourceErrorCode =
   | 'online.auth_required'
@@ -37,6 +41,7 @@ export interface MokeRemoteSourceErrorDetail {
 interface MokeRemoteSourceContext {
   url: string;
   mime: typeof EPUB_MIME;
+  responseMimes: readonly string[];
 }
 
 export type MokeRemoteFetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -59,15 +64,18 @@ function responseError(status: number): MokeRemoteSourceError {
 
 function parseServerOrigin(value: string): string | null {
   try {
-    const url = new URL(value);
+    // Moke deliberately carries the persisted spelling so progress keys remain
+    // stable. Canonicalize it again at this trust boundary: URL removes an
+    // explicit default port (for example HTTPS :443), so comparing `origin`
+    // back to the raw launch parameter rejects a valid source before any I/O.
+    const url = new URL(value.trim());
     if (
       !['http:', 'https:'].includes(url.protocol) ||
       url.username ||
       url.password ||
-      url.pathname !== '/' ||
+      !/^\/+$/u.test(url.pathname) ||
       url.search ||
-      url.hash ||
-      url.origin !== value.replace(/\/$/, '')
+      url.hash
     ) {
       return null;
     }
@@ -88,7 +96,8 @@ export function validateMokeRemoteSource(
   bookId: string,
 ): MokeRemoteSourceContext {
   const origin = parseServerOrigin(serverUrl);
-  if (!origin || !/^\d+$/.test(bookId)) {
+  const normalizedBookId = bookId.trim();
+  if (!origin || !/^\d+$/.test(normalizedBookId)) {
     throw new MokeRemoteSourceError('online.response_invalid');
   }
 
@@ -101,24 +110,54 @@ export function validateMokeRemoteSource(
 
   const revisionValues = source.searchParams.getAll('revision');
   const queryKeys = [...source.searchParams.keys()];
+  const isBootstrapResource =
+    source.pathname === `/read/resource/${normalizedBookId}.epub` &&
+    queryKeys.length === 1 &&
+    queryKeys[0] === 'revision' &&
+    revisionValues.length === 1 &&
+    SAFE_REVISION.test(revisionValues[0] || '');
+  // Talebook Android opens this fixed authenticated file route directly.
+  // Supporting the same route keeps pre-bootstrap Talebook 3.7+ compatible;
+  // the transport still requires an exact 206 before Reader sees the source.
+  const isLegacyResource =
+    source.pathname === `/api/book/${normalizedBookId}.epub` && queryKeys.length === 0;
   if (
     source.origin !== origin ||
     source.username ||
     source.password ||
     source.hash ||
-    source.pathname !== `/read/resource/${bookId}.epub` ||
-    queryKeys.length !== 1 ||
-    queryKeys[0] !== 'revision' ||
-    revisionValues.length !== 1 ||
-    !SAFE_REVISION.test(revisionValues[0] || '')
+    (!isBootstrapResource && !isLegacyResource)
   ) {
     throw new MokeRemoteSourceError('online.response_invalid');
   }
 
-  return { url: source.href, mime: EPUB_MIME };
+  return {
+    url: source.href,
+    mime: EPUB_MIME,
+    responseMimes: isLegacyResource ? [EPUB_MIME, LEGACY_EPUB_MIME] : [EPUB_MIME],
+  };
+}
+
+export function isMokeRemoteSourceUrl(sourceUrl: string): boolean {
+  if (typeof window === 'undefined' || !window.__MOKE_EMBEDDED) return false;
+  const serverUrl = window.__MOKE_SOURCE_SERVER_URL;
+  const bookId = window.__MOKE_BOOK_ID;
+  if (!serverUrl || !bookId) return false;
+  try {
+    validateMokeRemoteSource(sourceUrl, serverUrl, String(bookId));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function mokeRemoteSourceErrorDetail(error: unknown): MokeRemoteSourceErrorDetail | null {
+  // Importers add context with Error.cause; retain the typed online failure.
+  const seen = new Set<unknown>();
+  while (error instanceof Error && !(error instanceof MokeRemoteSourceError) && !seen.has(error)) {
+    seen.add(error);
+    error = error.cause;
+  }
   if (!(error instanceof MokeRemoteSourceError)) return null;
   return {
     code: error.code,
@@ -143,31 +182,57 @@ async function defaultMokeFetch(url: string, init: RequestInit = {}): Promise<Re
     });
   }
 
-  const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
-  return tauriFetch(url, {
-    ...init,
-    credentials: 'include',
-    maxRedirections: 0,
-    danger: { acceptInvalidCerts: true, acceptInvalidHostnames: true },
-  } as unknown as RequestInit);
+  return mokeTauriRangeFetch(url, init);
 }
 
-function abortResponse(response: Response): void {
-  void response.body?.cancel().catch(() => undefined);
+async function abortResponse(response: Response): Promise<void> {
+  await response.body?.cancel().catch(() => undefined);
 }
 
-function validateCommonResponse(response: Response, context: MokeRemoteSourceContext): void {
-  if (!response.ok) throw responseError(response.status);
+function validateResponseIdentity(response: Response, context: MokeRemoteSourceContext): void {
   if (response.redirected || response.url !== context.url) {
     throw new MokeRemoteSourceError('online.response_invalid', response.status);
   }
-  if (normalizedMime(response.headers.get('content-type')) !== context.mime) {
+}
+
+function validateRepresentation(response: Response, context: MokeRemoteSourceContext): void {
+  validateResponseIdentity(response, context);
+  if (!context.responseMimes.includes(normalizedMime(response.headers.get('content-type')))) {
     throw new MokeRemoteSourceError('online.mime_invalid', response.status);
   }
   const encoding = response.headers.get('content-encoding');
   if (encoding && encoding.toLowerCase() !== 'identity') {
     throw new MokeRemoteSourceError('online.response_invalid', response.status);
   }
+}
+
+function rangeStatusError(response: Response): MokeRemoteSourceError {
+  if (response.status === 200) {
+    return new MokeRemoteSourceError('online.range_unsupported', response.status);
+  }
+  if (response.status === 416) {
+    return new MokeRemoteSourceError('online.resource_changed', response.status);
+  }
+  if (!response.ok) return responseError(response.status);
+  return new MokeRemoteSourceError('online.response_invalid', response.status);
+}
+
+function syntheticHeadResponse(
+  context: MokeRemoteSourceContext,
+  size: number,
+  etag: string,
+): Response {
+  const response = new Response(null, {
+    status: 200,
+    headers: {
+      'Accept-Ranges': 'bytes',
+      'Content-Length': String(size),
+      'Content-Type': context.mime,
+      ETag: etag,
+    },
+  });
+  Object.defineProperty(response, 'url', { configurable: true, value: context.url });
+  return response;
 }
 
 /** Build a credential-carrying but source-locked transport for RemoteFile. */
@@ -182,22 +247,33 @@ export function createMokeRemoteSourceTransport(
   if (!bookId) throw new MokeRemoteSourceError('online.response_invalid');
 
   const context = validateMokeRemoteSource(sourceUrl, serverUrl, String(bookId));
-  window.__MOKE_ONLINE_SOURCE_METRICS = {
-    totalBytes: 0,
-    transferredBytes: 0,
-    rangeRequests: 0,
-  };
-  const activeControllers = new Set<AbortController>();
+  // Import and rendering reopen the same URL. Include both phases instead of
+  // resetting the transfer counters at the rendering handoff.
+  if (metricsSource !== context.url || !window.__MOKE_ONLINE_SOURCE_METRICS) {
+    metricsSource = context.url;
+    window.__MOKE_ONLINE_SOURCE_METRICS = {
+      totalBytes: 0,
+      transferredBytes: 0,
+      rangeRequests: 0,
+    };
+  }
+  const activeControllers = new Map<AbortController, () => void>();
   let expectedSize: number | null = null;
   let expectedEtag: string | null = null;
 
-  const releaseAfterBody = (response: Response, controller: AbortController, expectedLength: number) => {
+  const releaseAfterBody = (
+    response: Response,
+    expectedLength: number,
+    cleanup: () => void,
+    signal: AbortSignal,
+  ) => {
     const readBody = response.arrayBuffer.bind(response);
     Object.defineProperty(response, 'arrayBuffer', {
       configurable: true,
       value: async () => {
         try {
           const body = await readBody();
+          if (signal.aborted) throw new DOMException('Online read cancelled', 'AbortError');
           if (body.byteLength !== expectedLength) {
             throw new MokeRemoteSourceError('online.response_invalid', response.status);
           }
@@ -208,13 +284,17 @@ export function createMokeRemoteSourceTransport(
           }
           return body;
         } finally {
-          activeControllers.delete(controller);
+          cleanup();
         }
       },
     });
   };
 
-  return {
+  const lifetime = new AbortController();
+  const transport: RemoteFileTransport = {
+    // Moke's native transport supports HEAD on Android. Force that path so the
+    // authoritative one-byte probe establishes size/ETag before parser ranges.
+    openWithHead: true,
     // Partial-MD5 probes touch several distant offsets. A small online cache
     // avoids turning those probes into an accidental whole-file transfer for
     // ordinary EPUBs while preserving larger ranges requested by the parser.
@@ -235,89 +315,241 @@ export function createMokeRemoteSourceTransport(
       }
       const safeHeaders = new Headers();
       safeHeaders.set('Accept-Encoding', 'identity');
-      if (rangeHeader) safeHeaders.set('Range', rangeHeader);
 
       const controller = new AbortController();
-      activeControllers.add(controller);
       const externalSignal = init.signal;
-      const forwardAbort = () => controller.abort();
+      const forwardAbort = () => controller.abort(externalSignal?.reason);
+      const cleanupController = () => {
+        activeControllers.delete(controller);
+        externalSignal?.removeEventListener('abort', forwardAbort);
+      };
+      activeControllers.set(controller, cleanupController);
+      controller.signal.addEventListener('abort', cleanupController, { once: true });
       externalSignal?.addEventListener('abort', forwardAbort, { once: true });
+      if (externalSignal?.aborted) forwardAbort();
 
       let response: Response | undefined;
       try {
+        if (method === 'HEAD') {
+          response = await fetchImpl(url, {
+            method: 'HEAD',
+            headers: safeHeaders,
+            credentials: 'include',
+            redirect: 'manual',
+            signal: controller.signal,
+          });
+          validateResponseIdentity(response, context);
+
+          let headSize: number | null = null;
+          let headEtag: string | null = null;
+          if (response.status === 200) {
+            const mime = normalizedMime(response.headers.get('content-type'));
+            const encoding = response.headers.get('content-encoding');
+            const length = response.headers.get('content-length');
+            const etag = response.headers.get('etag');
+            if (mime && !context.responseMimes.includes(mime)) {
+              throw new MokeRemoteSourceError('online.mime_invalid', response.status);
+            }
+            if (encoding && encoding.toLowerCase() !== 'identity') {
+              throw new MokeRemoteSourceError('online.response_invalid', response.status);
+            }
+            if (length !== null) {
+              headSize = Number(length);
+              if (!Number.isSafeInteger(headSize) || headSize <= 0) {
+                throw new MokeRemoteSourceError('online.response_invalid', response.status);
+              }
+            }
+            if (etag !== null) {
+              if (!SAFE_ETAG.test(etag)) {
+                throw new MokeRemoteSourceError('online.response_invalid', response.status);
+              }
+              headEtag = etag;
+            }
+          } else if (response.status !== 405 && response.status !== 501) {
+            throw response.ok
+              ? new MokeRemoteSourceError('online.response_invalid', response.status)
+              : responseError(response.status);
+          }
+          await abortResponse(response);
+
+          // Verify the actual GET contract instead of trusting HEAD alone.
+          // A valid one-byte 206 also provides authoritative metadata when an
+          // otherwise compatible reverse proxy does not implement HEAD.
+          safeHeaders.set('Range', 'bytes=0-0');
+          response = await fetchImpl(url, {
+            method: 'GET',
+            headers: safeHeaders,
+            credentials: 'include',
+            redirect: 'manual',
+            signal: controller.signal,
+          });
+          validateResponseIdentity(response, context);
+          if (response.status !== 206) throw rangeStatusError(response);
+          validateRepresentation(response, context);
+
+          const contentRange = response.headers.get('content-range')?.match(CONTENT_RANGE_HEADER);
+          const size = Number(contentRange?.[3]);
+          const etag = response.headers.get('etag');
+          if (
+            !contentRange ||
+            contentRange[1] !== '0' ||
+            contentRange[2] !== '0' ||
+            response.headers.get('content-length') !== '1' ||
+            !Number.isSafeInteger(size) ||
+            size <= 0 ||
+            !etag ||
+            !SAFE_ETAG.test(etag)
+          ) {
+            throw new MokeRemoteSourceError('online.response_invalid', response.status);
+          }
+          if (headSize !== null && headSize !== size) {
+            throw new MokeRemoteSourceError('online.resource_changed', response.status);
+          }
+          if (headEtag !== null && headEtag !== etag) {
+            throw new MokeRemoteSourceError('online.resource_changed', response.status);
+          }
+
+          const firstByte = await response.arrayBuffer();
+          if (controller.signal.aborted)
+            throw new DOMException('Online read cancelled', 'AbortError');
+          if (firstByte.byteLength !== 1) {
+            throw new MokeRemoteSourceError('online.response_invalid', response.status);
+          }
+          expectedSize = size;
+          expectedEtag = etag;
+          const metrics = window.__MOKE_ONLINE_SOURCE_METRICS;
+          if (metrics) {
+            metrics.totalBytes = size;
+            metrics.transferredBytes += 1;
+            metrics.rangeRequests += 1;
+          }
+          cleanupController();
+          return syntheticHeadResponse(context, size, etag);
+        }
+
+        const range = rangeHeader?.match(RANGE_HEADER);
+        if (!range || expectedSize === null || expectedEtag === null) {
+          throw new MokeRemoteSourceError('online.response_invalid');
+        }
+        const requestedStart = Number(range[1]);
+        const requestedEnd = Number(range[2]);
+        if (
+          !Number.isSafeInteger(requestedStart) ||
+          !Number.isSafeInteger(requestedEnd) ||
+          requestedStart < 0 ||
+          requestedStart > requestedEnd ||
+          requestedStart >= expectedSize
+        ) {
+          throw new MokeRemoteSourceError('online.response_invalid');
+        }
+        // RemoteFile reads [start,end] but deliberately prefetches beyond the
+        // requested slice. Clamp that cache window before sending it so the
+        // wire request remains a valid, exact single range at EOF.
+        const effectiveEnd = Math.min(requestedEnd, expectedSize - 1);
+        safeHeaders.set('Range', `bytes=${requestedStart}-${effectiveEnd}`);
         response = await fetchImpl(url, {
-          method,
+          method: 'GET',
           headers: safeHeaders,
           credentials: 'include',
           redirect: 'manual',
           signal: controller.signal,
         });
-        validateCommonResponse(response, context);
+        validateResponseIdentity(response, context);
+        if (response.status !== 206) throw rangeStatusError(response);
+        validateRepresentation(response, context);
 
         const etag = response.headers.get('etag');
         if (!etag || !SAFE_ETAG.test(etag)) {
           throw new MokeRemoteSourceError('online.response_invalid', response.status);
         }
-
-        if (method === 'HEAD') {
-          if (response.status !== 200 || response.headers.get('accept-ranges')?.toLowerCase() !== 'bytes') {
-            throw new MokeRemoteSourceError('online.range_unsupported', response.status);
-          }
-          const size = Number(response.headers.get('content-length'));
-          if (!Number.isSafeInteger(size) || size <= 0) {
-            throw new MokeRemoteSourceError('online.response_invalid', response.status);
-          }
-          expectedSize = size;
-          expectedEtag = etag;
-          if (window.__MOKE_ONLINE_SOURCE_METRICS) {
-            window.__MOKE_ONLINE_SOURCE_METRICS.totalBytes = size;
-          }
-          try {
-            await response.arrayBuffer();
-          } catch {
-            // HEAD metadata is complete; body disposal is best effort.
-          }
-          activeControllers.delete(controller);
-          return response;
-        }
-
-        const range = rangeHeader?.match(RANGE_HEADER);
-        if (!range || response.status !== 206 || expectedSize === null || expectedEtag === null) {
-          throw new MokeRemoteSourceError('online.range_unsupported', response.status);
-        }
         if (etag !== expectedEtag) {
           throw new MokeRemoteSourceError('online.resource_changed', response.status);
         }
 
-        const requestedStart = Number(range[1]);
-        const requestedEnd = Number(range[2]);
         const contentRange = response.headers.get('content-range')?.match(CONTENT_RANGE_HEADER);
         if (
           !contentRange ||
           Number(contentRange[1]) !== requestedStart ||
-          Number(contentRange[2]) !== requestedEnd ||
+          Number(contentRange[2]) !== effectiveEnd ||
           Number(contentRange[3]) !== expectedSize
         ) {
           throw new MokeRemoteSourceError('online.response_invalid', response.status);
         }
-        const expectedLength = requestedEnd - requestedStart + 1;
+        const expectedLength = effectiveEnd - requestedStart + 1;
         if (Number(response.headers.get('content-length')) !== expectedLength) {
           throw new MokeRemoteSourceError('online.response_invalid', response.status);
         }
-        releaseAfterBody(response, controller, expectedLength);
+        releaseAfterBody(response, expectedLength, cleanupController, controller.signal);
         return response;
       } catch (error) {
-        activeControllers.delete(controller);
-        if (response) abortResponse(response);
+        cleanupController();
+        if (response) await abortResponse(response);
+        if (controller.signal.aborted)
+          throw new DOMException('Online read cancelled', 'AbortError');
         if (error instanceof MokeRemoteSourceError) throw error;
         throw new MokeRemoteSourceError('online.network');
-      } finally {
-        externalSignal?.removeEventListener('abort', forwardAbort);
       }
     },
     close() {
-      for (const controller of activeControllers) controller.abort();
-      activeControllers.clear();
+      lifetime.abort();
+      for (const [controller, cleanup] of [...activeControllers]) {
+        controller.abort();
+        cleanup();
+      }
+    },
+  };
+
+  return {
+    ...transport,
+    async fetch(url, init = {}) {
+      const operation = new AbortController();
+      const cancel = () => operation.abort();
+      const signals = [lifetime.signal, init.signal].filter(
+        (signal): signal is AbortSignal => !!signal,
+      );
+      for (const signal of signals) {
+        signal.addEventListener('abort', cancel, { once: true });
+        if (signal.aborted) cancel();
+      }
+      try {
+        return await retryOnlineRead(
+          async (signal) => {
+            const response = await transport.fetch(url, { ...init, signal });
+            if ((init.method || 'GET').toUpperCase() === 'HEAD') return response;
+            // Consume only the validated Range so body failures can retry without
+            // giving ZIP partial data. RemoteFile splits large reads into 1 MB ranges.
+            try {
+              const body = await response.arrayBuffer();
+              const result = new Response(body, {
+                status: response.status,
+                headers: response.headers,
+              });
+              Object.defineProperty(result, 'url', { value: response.url });
+              return result;
+            } catch (error) {
+              await abortResponse(response);
+              if (error instanceof MokeRemoteSourceError) throw error;
+              throw new MokeRemoteSourceError('online.network');
+            }
+          },
+          (error) => {
+            if (error instanceof DOMException && error.name === 'TimeoutError') return true;
+            return (
+              error instanceof MokeRemoteSourceError &&
+              error.code === 'online.network' &&
+              (error.status === undefined || [408, 502, 503, 504].includes(error.status))
+            );
+          },
+          operation.signal,
+        );
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'TimeoutError') {
+          throw new MokeRemoteSourceError('online.network');
+        }
+        throw error;
+      } finally {
+        for (const signal of signals) signal.removeEventListener('abort', cancel);
+      }
     },
   };
 }

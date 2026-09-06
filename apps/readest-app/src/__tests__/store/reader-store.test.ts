@@ -109,6 +109,26 @@ function seedViewState(key: string, overrides: Record<string, unknown> = {}) {
   }));
 }
 
+test('closes a newly opened source when document initialization fails', async () => {
+  const error = new Error('offline');
+  const file = Object.assign(new File(['epub'], 'book.epub'), { close: vi.fn(async () => {}) });
+  const book = { hash: 'failed', format: 'EPUB' } as Book;
+  const appService = {
+    loadBookContent: vi.fn(async () => ({ book, file })),
+    loadBookConfig: vi.fn(async () => ({ viewSettings: {}, booknotes: [] })),
+    loadBookNav: vi.fn(async () => null),
+  };
+  vi.mocked(useLibraryStore.getState().getBookByHash).mockReturnValue(book);
+  useSettingsStore.setState({ settings: { globalViewSettings: {} } as never });
+  vi.mocked(DocumentLoader).mockImplementation(function MockDocumentLoader() {
+    return { open: vi.fn(async () => { throw error; }) };
+  } as never);
+  await expect(useReaderStore.getState().initViewState(
+    { getAppService: async () => appService } as never, 'failed', 'failed-0',
+  )).rejects.toBe(error);
+  expect(file.close).toHaveBeenCalledOnce();
+});
+
 describe('readerStore', () => {
   beforeEach(() => {
     useReaderStore.setState({
@@ -120,13 +140,19 @@ describe('readerStore', () => {
   });
 
   describe('initViewState', () => {
-    test('starts independent content and sidecar reads and reuses the authorized native path', async () => {
+    test.each([false, true])('initializes content while avoiding whole-book nav scans online=%s', async (online) => {
+      vi.mocked(computeBookNav).mockClear();
+      vi.mocked(hydrateBookNav).mockClear();
+      window.__MOKE_EMBEDDED = online;
+      window.__MOKE_SOURCE_SERVER_URL = 'https://books.example';
+      window.__MOKE_BOOK_ID = '42';
       let resolveContent!: (content: BookContent) => void;
       const contentPromise = new Promise<BookContent>((resolve) => {
         resolveContent = resolve;
       });
       const file = new File(['epub'], 'book.epub', { type: 'application/epub+zip' });
       const book: Book = {
+        url: online ? 'https://books.example/api/book/42.epub' : undefined,
         hash: 'bookid',
         title: 'Book',
         author: 'Author',
@@ -176,7 +202,10 @@ describe('readerStore', () => {
       expect(DocumentLoader).toHaveBeenCalledWith(file, {
         nativeFilePath: '/books/book.epub',
       });
-      expect(hydrateBookNav).toHaveBeenCalledWith(bookDoc, cachedNav);
+      if (online) {
+        expect(computeBookNav).not.toHaveBeenCalled();
+        expect(hydrateBookNav).not.toHaveBeenCalled();
+      } else expect(hydrateBookNav).toHaveBeenCalledWith(bookDoc, cachedNav);
       expect(useReaderStore.getState().getViewState(`${book.hash}-0`)?.loading).toBe(false);
       // Persisting a performance-only nav cache must not delay book:opened or
       // the first restored page, but it still runs shortly afterward.
@@ -195,7 +224,9 @@ describe('readerStore', () => {
           document.createRange(),
           0.1,
         );
-      await vi.waitFor(() => expect(appService.saveBookNav).toHaveBeenCalledWith(book, cachedNav));
+      if (online) expect(appService.saveBookNav).not.toHaveBeenCalled();
+      else await vi.waitFor(() => expect(appService.saveBookNav).toHaveBeenCalledWith(book, cachedNav));
+      window.__MOKE_EMBEDDED = false;
     });
   });
 

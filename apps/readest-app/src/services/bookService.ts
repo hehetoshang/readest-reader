@@ -571,7 +571,7 @@ export async function importBook(
         loadedBook.metadata.title = getBaseFilename(filename);
       }
     } catch (error) {
-      throw new Error(`Failed to open the book file: ${(error as Error).message || error}`);
+      throw new Error(`Failed to open the book file: ${(error as Error).message || error}`, { cause: error });
     }
 
     const hash = isPseStream

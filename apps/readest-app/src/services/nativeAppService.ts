@@ -638,21 +638,22 @@ export class NativeAppService extends BaseAppService {
     void this.startCoverThumbnailListener().catch(() => {});
     const execDir = await invoke<string>('get_executable_dir');
     this.execDir = execDir;
-    // Report the WebView User-Agent so Sentry can tag crashes with the
-    // engine/version (the injected browser SDK's UA context isn't forwarded).
-    try {
-      await invoke('set_webview_info', { userAgent: navigator.userAgent });
-    } catch (err) {
-      console.warn('[nativeAppService] set_webview_info failed:', err);
+    // The embedded build does not register Readest's Sentry-only command in
+    // the host invoke handler. Do not turn that intentional boundary into an
+    // ACL warning on every Reader start.
+    if (!window.__MOKE_EMBEDDED) {
+      try {
+        await invoke('set_webview_info', { userAgent: navigator.userAgent });
+      } catch (err) {
+        console.warn('[nativeAppService] set_webview_info failed:', err);
+      }
     }
-    // Ask Rust whether the in-app updater must stay hidden (READEST_DISABLE_UPDATER,
-    // Flatpak, or a Linux deb/rpm/pacman install that Tauri can't self-update). The
-    // command is the reliable source of truth; the `__READEST_UPDATER_DISABLED`
-    // init-script global isn't dependable on every Linux/WebKitGTK setup (#4874).
-    if (this.isDesktopApp) {
+    // Readest's embedded profile has no updater. Query the native policy only
+    // when an actual standalone profile still exposes an updater action.
+    if (this.isDesktopApp && this.hasUpdater) {
       try {
         const updaterDisabled = await invoke<boolean>('is_updater_disabled');
-        this.hasUpdater = this.hasUpdater && !updaterDisabled;
+        this.hasUpdater = !updaterDisabled;
       } catch (err) {
         console.warn('[nativeAppService] is_updater_disabled failed:', err);
       }

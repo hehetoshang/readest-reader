@@ -35,6 +35,7 @@
 // Avoids ferrying multi-MB MOBI/AZW3 blobs across the JS<->Rust IPC
 // boundary and is a no-op on the web platform.
 import { invoke } from '@tauri-apps/api/core';
+import { isNativeBookPath } from './nativeBookPath';
 import { isTauriAppPlatform } from '@/services/environment';
 import type { BookDoc, BookMetadata } from '@/libs/document';
 import type { BookFormat } from '@/types/book';
@@ -49,7 +50,7 @@ import type { BookFormat } from '@/types/book';
 const MOBI_EXT_RE = /\.(mobi|azw|azw3|prc)$/i;
 
 export const isEligibleMobiPath = (filePath: string | undefined): filePath is string =>
-  !!filePath && isTauriAppPlatform() && MOBI_EXT_RE.test(filePath);
+  !!filePath && isTauriAppPlatform() && isNativeBookPath(filePath) && MOBI_EXT_RE.test(filePath);
 
 /**
  * Map the file's extension to the on-disk `Book.format`.

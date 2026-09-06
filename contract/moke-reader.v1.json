@@ -30,7 +30,9 @@
   "onlineSource": {
     "formats": ["epub"],
     "pathTemplate": "/read/resource/{mokeBookId}.epub?revision={revision}",
+    "legacyPathTemplate": "/api/book/{mokeBookId}.epub",
     "mime": "application/epub+zip",
+    "acceptedLegacyResponseMimes": ["application/epub+zip", "application/octet-stream"],
     "rangeRequired": true,
     "redirects": 0,
     "transport": "@tauri-apps/plugin-http"

@@ -34,6 +34,7 @@ import { clearDiscordPresence } from '@/utils/discord';
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
 import { emitReaderEvent } from '@/services/mokeBridge';
 import {
+  isMokeRemoteSourceUrl,
   mokeRemoteSourceErrorDetail,
   type MokeRemoteSourceErrorDetail,
 } from '@/services/mokeRemoteSource';
@@ -91,10 +92,14 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   const { user } = useAuth();
   const isInitiating = useRef(false);
   const hasHandledOpenFiles = useRef(false);
+  const mokeOpenFilesRef = useRef<string[] | null>(null);
   const closingBooksRef = useRef<{ bookKeys: string; promise: Promise<void> } | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorLoading, setErrorLoading] = useState(false);
-  const [remoteSourceError, setRemoteSourceError] = useState<MokeRemoteSourceErrorDetail | null>(null);
+  const [remoteSourceError, setRemoteSourceError] = useState<MokeRemoteSourceErrorDetail | null>(
+    null,
+  );
+  const [openAttempt, setOpenAttempt] = useState(0);
 
   useBookShortcuts({ sideBarBookKey, bookKeys });
   useMokeCommandListener(bookKeys);
@@ -183,8 +188,13 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     if (hasHandledOpenFiles.current) return;
 
     const mokeFiles = getMokeEmbeddedFiles();
-    const files = window.OPEN_WITH_FILES?.length ? window.OPEN_WITH_FILES : mokeFiles;
-    if (!files?.length) return;
+    if (mokeOpenFilesRef.current === null) {
+      mokeOpenFilesRef.current = window.OPEN_WITH_FILES?.length
+        ? [...window.OPEN_WITH_FILES]
+        : mokeFiles;
+    }
+    const files = mokeOpenFilesRef.current;
+    if (!files.length) return;
 
     hasHandledOpenFiles.current = true;
     window.OPEN_WITH_FILES = null;
@@ -236,16 +246,22 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
           // library book, route to it without importBook — transient import
           // would otherwise rewrite that entry's filePath/createdAt.
           let existingHash: string | undefined;
-          try {
-            const fileobj = await appService.openFile(file, 'None');
+          // Online sources are transient by definition and importBook already
+          // hashes them once. Opening and hashing here first doubled every
+          // preflight/range request and produced a second import attempt after
+          // the first Range failure. Local files retain the dedupe fast path.
+          if (!isMokeRemoteSourceUrl(file)) {
             try {
-              existingHash = await partialMD5(fileobj);
-            } finally {
-              const closable = fileobj as File & { close?: () => Promise<void> };
-              if (closable.close) await closable.close();
+              const fileobj = await appService.openFile(file, 'None');
+              try {
+                existingHash = await partialMD5(fileobj);
+              } finally {
+                const closable = fileobj as File & { close?: () => Promise<void> };
+                if (closable.close) await closable.close();
+              }
+            } catch (e) {
+              console.warn('Pre-hash failed, falling back to transient import:', file, e);
             }
-          } catch (e) {
-            console.warn('Pre-hash failed, falling back to transient import:', file, e);
           }
 
           if (existingHash) {
@@ -302,7 +318,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     // happen before initViewState's own rejection handler exists.
     void runTransientReaderBootstrap(openTransientFiles, failToOpen);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appService]);
+  }, [appService, openAttempt]);
 
   useEffect(() => {
     const handleManageAudiobook = (event: CustomEvent) => {
@@ -437,10 +453,22 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   const navigateBackToLibrary = async () => {
     const returnTarget = resolveReaderReturnTarget(window.location.search);
     if (returnTarget.kind === 'moke') {
-      try {
-        await invoke('moke_navigate', { path: returnTarget.path });
-      } catch (error) {
-        console.warn('moke_navigate failed, falling back to full-document navigation:', error);
+      const runtimePlatform = window.__MOKE_RUNTIME_PLATFORM;
+      if (runtimePlatform === 'android' || runtimePlatform === 'ohos') {
+        try {
+          await invoke('moke_navigate', { path: returnTarget.path });
+          return;
+        } catch (error) {
+          console.warn('moke_navigate failed, falling back to full-document navigation:', error);
+        }
+      }
+      if (
+        isTauriAppPlatform() &&
+        appService?.hasWindow &&
+        getCurrentWindow().label !== 'main'
+      ) {
+        await closeReaderWindowOrGoToLibrary(appService, router);
+      } else {
         window.location.assign(returnTarget.path);
       }
       return;
@@ -527,16 +555,30 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       <div className='hero hero-content full-height px-6 text-center'>
         <div className='max-w-md'>
           <h1 className='text-xl font-semibold'>{_('Unable to open book')}</h1>
-          <p className='mt-3 opacity-70'>{_('Network error')}</p>
+          <p className='mt-3 opacity-70'>
+            {remoteSourceError.code === 'online.range_unsupported'
+              ? _('This server does not support byte-range reading. Download the book to continue.')
+              : _('Network error')}
+          </p>
           <div className='mt-6 flex flex-wrap justify-center gap-3'>
-            <button className='btn btn-primary' onClick={() => window.location.reload()}>
+            <button
+              className='btn btn-primary'
+              onClick={() => {
+                // Retry in the live document. Reloading while tauri-plugin-http
+                // still owned response resources orphaned invoke callbacks and
+                // triggered the unusable postMessage fallback on mobile.
+                hasHandledOpenFiles.current = false;
+                setRemoteSourceError(null);
+                setErrorLoading(false);
+                setOpenAttempt((attempt) => attempt + 1);
+              }}
+            >
               {_('Retry')}
             </button>
             <button
               className='btn btn-outline'
               onClick={async () => {
-                const service = await envConfig.getAppService();
-                await closeReaderWindowOrGoToLibrary(service, router);
+                await navigateBackToLibrary();
               }}
             >
               {_('Go Back')} · {_('Download')}
