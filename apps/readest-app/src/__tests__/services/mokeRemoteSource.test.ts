@@ -63,6 +63,32 @@ describe('Moke online source authorization', () => {
     }
   });
 
+  it('canonicalizes equivalent persisted server origins before authorizing the source', () => {
+    for (const serverUrl of [
+      `${SERVER}/`,
+      `${SERVER}///`,
+      ' HTTPS://BOOKS.EXAMPLE:443/ ',
+    ]) {
+      expect(validateMokeRemoteSource(LEGACY_SOURCE, serverUrl, ' 42 ')).toEqual({
+        url: LEGACY_SOURCE,
+        mime: 'application/epub+zip',
+        responseMimes: ['application/epub+zip', 'application/octet-stream'],
+      });
+    }
+
+    for (const invalidServerUrl of [
+      `${SERVER}/library`,
+      `${SERVER}?next=/library`,
+      `${SERVER}#library`,
+      'ftp://books.example',
+      'https://user:secret@books.example',
+    ]) {
+      expect(() => validateMokeRemoteSource(LEGACY_SOURCE, invalidServerUrl, '42')).toThrow(
+        MokeRemoteSourceError,
+      );
+    }
+  });
+
   it('proves the GET contract and accepts exact 206 reads without buffering a full response', async () => {
     const fetchMock = vi
       .fn()

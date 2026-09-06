@@ -62,15 +62,18 @@ function responseError(status: number): MokeRemoteSourceError {
 
 function parseServerOrigin(value: string): string | null {
   try {
-    const url = new URL(value);
+    // Moke deliberately carries the persisted spelling so progress keys remain
+    // stable. Canonicalize it again at this trust boundary: URL removes an
+    // explicit default port (for example HTTPS :443), so comparing `origin`
+    // back to the raw launch parameter rejects a valid source before any I/O.
+    const url = new URL(value.trim());
     if (
       !['http:', 'https:'].includes(url.protocol) ||
       url.username ||
       url.password ||
-      url.pathname !== '/' ||
+      !/^\/+$/u.test(url.pathname) ||
       url.search ||
-      url.hash ||
-      url.origin !== value.replace(/\/$/, '')
+      url.hash
     ) {
       return null;
     }
@@ -91,7 +94,8 @@ export function validateMokeRemoteSource(
   bookId: string,
 ): MokeRemoteSourceContext {
   const origin = parseServerOrigin(serverUrl);
-  if (!origin || !/^\d+$/.test(bookId)) {
+  const normalizedBookId = bookId.trim();
+  if (!origin || !/^\d+$/.test(normalizedBookId)) {
     throw new MokeRemoteSourceError('online.response_invalid');
   }
 
@@ -105,7 +109,7 @@ export function validateMokeRemoteSource(
   const revisionValues = source.searchParams.getAll('revision');
   const queryKeys = [...source.searchParams.keys()];
   const isBootstrapResource =
-    source.pathname === `/read/resource/${bookId}.epub` &&
+    source.pathname === `/read/resource/${normalizedBookId}.epub` &&
     queryKeys.length === 1 &&
     queryKeys[0] === 'revision' &&
     revisionValues.length === 1 &&
@@ -114,7 +118,7 @@ export function validateMokeRemoteSource(
   // Supporting the same route keeps pre-bootstrap Talebook 3.7+ compatible;
   // the transport still requires an exact 206 before Reader sees the source.
   const isLegacyResource =
-    source.pathname === `/api/book/${bookId}.epub` &&
+    source.pathname === `/api/book/${normalizedBookId}.epub` &&
     queryKeys.length === 0;
   if (
     source.origin !== origin ||
