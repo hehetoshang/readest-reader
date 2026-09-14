@@ -6,6 +6,7 @@ import { Buffer } from 'node:buffer';
 const { zipSync } = createRequire(import.meta.url)('fflate') as typeof import('fflate');
 import { DocumentLoader } from '@/libs/document';
 import { RemoteFile } from '@/utils/file';
+import { getInitialReaderLocation } from '@/app/reader/utils/transientReader';
 import {
   createMokeRemoteSourceTransport,
   MokeRemoteSourceError,
@@ -15,7 +16,7 @@ import {
 const SERVER = 'https://books.example';
 const SOURCE = `${SERVER}/api/book/42.epub`;
 
-function fixture(ncx: boolean) {
+function fixture(ncx: boolean, largeCover = false) {
   // fflate can live in Node's realm while Vitest uses jsdom's typed arrays.
   const ZipBytes = zipSync({}).constructor as Uint8ArrayConstructor;
   const text = (value: string) => new ZipBytes(Buffer.from(value));
@@ -26,7 +27,7 @@ function fixture(ncx: boolean) {
         '<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
       ),
       'OEBPS/book.opf': text(
-        `<package xmlns="http://www.idpf.org/2007/opf" version="${ncx ? '2.0' : '3.0'}" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">test</dc:identifier><dc:title>Range test</dc:title><dc:language>en</dc:language></metadata><manifest><item id="nav" href="${ncx ? 'toc.ncx' : 'nav.xhtml'}" media-type="${ncx ? 'application/x-dtbncx+xml' : 'application/xhtml+xml'}" ${ncx ? '' : 'properties="nav"'}/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine toc="nav"><itemref idref="one"/><itemref idref="two"/></spine></package>`,
+        `<package xmlns="http://www.idpf.org/2007/opf" version="${ncx ? '2.0' : '3.0'}" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">test</dc:identifier><dc:title>Range test</dc:title><dc:language>en</dc:language>${largeCover ? '<meta name="cover" content="cover-image"/>' : ''}</metadata><manifest>${largeCover ? '<item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/><item id="cover-image" href="unread-media" media-type="image/png"/>' : ''}<item id="nav" href="${ncx ? 'toc.ncx' : 'nav.xhtml'}" media-type="${ncx ? 'application/x-dtbncx+xml' : 'application/xhtml+xml'}" ${ncx ? '' : 'properties="nav"'}/><item id="one" href="one.xhtml" media-type="application/xhtml+xml"/><item id="two" href="two.xhtml" media-type="application/xhtml+xml"/></manifest><spine toc="nav">${largeCover ? '<itemref idref="cover"/>' : ''}<itemref idref="one"/><itemref idref="two"/></spine></package>`,
       ),
       'padding-before-nav': new ZipBytes(256 * 1024),
       [ncx ? 'OEBPS/toc.ncx' : 'OEBPS/nav.xhtml']: text(
@@ -41,7 +42,8 @@ function fixture(ncx: boolean) {
       'OEBPS/two.xhtml': text(
         '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="two">Second chapter content</h1></body></html>',
       ),
-      'unread-media': new ZipBytes(2 * 1024 * 1024),
+      ...(largeCover ? { 'OEBPS/cover.xhtml': text('<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="unread-media"/></body></html>') } : {}),
+      [largeCover ? 'OEBPS/unread-media' : 'unread-media']: new ZipBytes(2 * 1024 * 1024),
     },
     { level: 0 },
   );
@@ -89,6 +91,26 @@ afterEach(() => {
 });
 
 describe('real ZIP / EPUB parser over the online Range transport', () => {
+  it('opens text ahead of a multi-megabyte cover without fetching the cover', async () => {
+    const bytes = fixture(true, true);
+    const endpoint = server(bytes);
+    const file = await new RemoteFile(SOURCE, 'book.epub', '', Date.now(),
+      createMokeRemoteSourceTransport(SOURCE, endpoint.fetch)!,
+    ).open();
+    try {
+      const { book } = await new DocumentLoader(file).open();
+      const location = getInitialReaderLocation(undefined, { url: SOURCE }, book.toc)!;
+      const epub = book as typeof book & { resolveHref(href: string): { index: number } };
+      const index = epub.resolveHref(location).index;
+      expect(index).toBe(1);
+      expect(await book.sections[index]!.loadText!()).toContain('First chapter content');
+      const transferred = endpoint.reads.reduce((sum, [start, end]) => sum + end - start + 1, 0);
+      expect(transferred).toBeLessThan(128 * 1024);
+    } finally {
+      await file.close();
+    }
+  });
+
   it.each([
     false,
     true,
