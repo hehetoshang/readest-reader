@@ -3,7 +3,6 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { convertBlobUrlToDataUrl, BookDoc, getDirection } from '@/libs/document';
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
-import { isMokeRemoteSourceUrl } from '@/services/mokeRemoteSource';
 import { getInitialReaderLocation } from '../utils/transientReader';
 import {
   captureMokeAnnotationNavigation,
@@ -806,7 +805,7 @@ const FoliateViewer: React.FC<{
 
       const lastLocation = getInitialReaderLocation(
         overrideLocation ?? config.location,
-        isMokeRemoteSourceUrl(bookData?.book?.filePath ?? ''),
+        bookData?.book,
         bookDoc.toc,
       );
       if (lastLocation) {

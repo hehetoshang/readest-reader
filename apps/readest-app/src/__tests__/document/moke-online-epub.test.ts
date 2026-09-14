@@ -99,7 +99,7 @@ describe('real ZIP / EPUB parser over the online Range transport', () => {
     ).open();
     try {
       const { book } = await new DocumentLoader(file).open();
-      const location = getInitialReaderLocation(undefined, true, book.toc)!;
+      const location = getInitialReaderLocation(undefined, { url: SOURCE }, book.toc)!;
       const epub = book as typeof book & { resolveHref(href: string): { index: number } };
       const index = epub.resolveHref(location).index;
       expect(index).toBe(1);
