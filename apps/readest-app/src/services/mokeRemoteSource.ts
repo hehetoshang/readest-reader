@@ -2,6 +2,7 @@ import { retryOnlineRead } from '@/services/mokeOnlineRetry';
 import { isTauriAppPlatform } from '@/services/environment';
 import { mokeTauriRangeFetch } from '@/services/mokeTauriRangeFetch';
 import type { RemoteFileTransport } from '@/utils/file';
+import { eventDispatcher } from '@/utils/event';
 
 const EPUB_MIME = 'application/epub+zip';
 const LEGACY_EPUB_MIME = 'application/octet-stream';
@@ -36,6 +37,13 @@ export interface MokeRemoteSourceErrorDetail {
   operation: 'online.open';
   retryable: boolean;
   status?: number;
+}
+
+export const MOKE_REMOTE_SOURCE_FAILED = 'moke-remote-source-failed';
+
+export interface MokeRemoteSourceFailure {
+  sourceUrl: string;
+  error: MokeRemoteSourceErrorDetail;
 }
 
 interface MokeRemoteSourceContext {
@@ -543,10 +551,21 @@ export function createMokeRemoteSourceTransport(
           operation.signal,
         );
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'TimeoutError') {
-          throw new MokeRemoteSourceError('online.network');
+        const failure = error instanceof DOMException && error.name === 'TimeoutError'
+          ? new MokeRemoteSourceError('online.network')
+          : error;
+        const detail = mokeRemoteSourceErrorDetail(failure);
+        if (!operation.signal.aborted && detail) {
+          // Foliate may catch chapter/resource failures without rejecting its
+          // open operation. Notify the shell after retries are exhausted so
+          // those failures cannot leave an indefinite loading indicator.
+          transport.close?.();
+          void eventDispatcher.dispatch(MOKE_REMOTE_SOURCE_FAILED, {
+            sourceUrl: context.url,
+            error: detail,
+          } satisfies MokeRemoteSourceFailure);
         }
-        throw error;
+        throw failure;
       } finally {
         for (const signal of signals) signal.removeEventListener('abort', cancel);
       }

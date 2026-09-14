@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 
@@ -44,6 +44,7 @@ import { resolveReaderReturnTarget } from '@/utils/readerBack';
 import useBooksManager from '../hooks/useBooksManager';
 import useBookShortcuts from '../hooks/useBookShortcuts';
 import { useMokeCommandListener } from '../hooks/useMokeCommandListener';
+import { useMokeRemoteSourceError } from '../hooks/useMokeRemoteSourceError';
 import Spinner from '@/components/Spinner';
 import SideBar from './sidebar/SideBar';
 import LazyNotebook from './notebook/LazyNotebook';
@@ -100,6 +101,13 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     null,
   );
   const [openAttempt, setOpenAttempt] = useState(0);
+
+  const reportRemoteSourceError = useCallback((detail: MokeRemoteSourceErrorDetail) => {
+    setErrorLoading(true);
+    setRemoteSourceError(detail);
+    void emitReaderEvent('reader:error', detail as unknown as Record<string, unknown>);
+  }, []);
+  useMokeRemoteSourceError(mokeOpenFilesRef, reportRemoteSourceError);
 
   useBookShortcuts({ sideBarBookKey, bookKeys });
   useMokeCommandListener(bookKeys);
@@ -203,8 +211,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       setErrorLoading(true);
       const detail = mokeRemoteSourceErrorDetail(error);
       if (detail) {
-        setRemoteSourceError(detail);
-        void emitReaderEvent('reader:error', detail as unknown as Record<string, unknown>);
+        reportRemoteSourceError(detail);
         return;
       }
       eventDispatcher.dispatch('toast', {
@@ -272,7 +279,12 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
             }
           }
 
-          const book = await appService.importBook(file, library, { transient: true });
+          // An online EPUB cover can be larger than its text. Extracting it
+          // here blocks opening and downloads it again when the cover is shown.
+          const book = await appService.importBook(file, library, {
+            transient: true,
+            saveCover: !isMokeRemoteSourceUrl(file),
+          });
           if (book) {
             bookIds.push(book.hash);
             libraryMutated = true;
@@ -563,10 +575,12 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
           <div className='mt-6 flex flex-wrap justify-center gap-3'>
             <button
               className='btn btn-primary'
-              onClick={() => {
+              onClick={async () => {
                 // Retry in the live document. Reloading while tauri-plugin-http
                 // still owned response resources orphaned invoke callbacks and
                 // triggered the unusable postMessage fallback on mobile.
+                await handleCloseBooks();
+                setBookKeys([]);
                 hasHandledOpenFiles.current = false;
                 setRemoteSourceError(null);
                 setErrorLoading(false);
@@ -578,6 +592,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
             <button
               className='btn btn-outline'
               onClick={async () => {
+                await handleCloseBooks();
                 await navigateBackToLibrary();
               }}
             >

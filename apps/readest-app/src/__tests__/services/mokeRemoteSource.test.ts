@@ -5,7 +5,9 @@ import {
   MokeRemoteSourceError,
   mokeRemoteSourceErrorDetail,
   validateMokeRemoteSource,
+  MOKE_REMOTE_SOURCE_FAILED,
 } from '@/services/mokeRemoteSource';
+import { eventDispatcher } from '@/utils/event';
 
 const SERVER = 'https://books.example';
 const SOURCE = `${SERVER}/read/resource/42.epub?revision=abc-123`;
@@ -30,10 +32,81 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   window.__MOKE_EMBEDDED = false;
   window.__MOKE_SOURCE_SERVER_URL = null;
   window.__MOKE_ONLINE_SOURCE_METRICS = null;
   window.__MOKE_BOOK_ID = null;
+});
+
+it('reports a stalled chapter body after all retries and cancels its transport', async () => {
+  vi.useFakeTimers();
+  const failed = vi.fn();
+  eventDispatcher.on(MOKE_REMOTE_SOURCE_FAILED, failed);
+  const signals: AbortSignal[] = [];
+  let bodyReads = 0;
+  const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'HEAD') return response(405, {});
+    const probe = new Headers(init?.headers).get('range') === 'bytes=0-0';
+    const result = response(206, {
+      'content-type': 'application/epub+zip',
+      'content-length': probe ? '1' : '65536',
+      'content-range': probe ? 'bytes 0-0/3000000' : 'bytes 2480102-2545637/3000000',
+      etag: '"one"',
+    }, new Uint8Array([0]));
+    if (!probe) {
+      signals.push(init!.signal!);
+      Object.defineProperty(result, 'arrayBuffer', {
+        configurable: true,
+        value: () => {
+          bodyReads++;
+          return new Promise<ArrayBuffer>(() => {});
+        },
+      });
+    }
+    return result;
+  });
+  const transport = createMokeRemoteSourceTransport(SOURCE, fetch)!;
+  try {
+    await transport.fetch(SOURCE, { method: 'HEAD' });
+    const pending = transport.fetch(SOURCE, { headers: { Range: 'bytes=2480102-2545637' } });
+    const checked = expect(pending).rejects.toMatchObject({ code: 'online.network' });
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(failed).not.toHaveBeenCalled();
+    await vi.runAllTimersAsync();
+    await checked;
+    expect(bodyReads).toBe(3);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(failed).toHaveBeenCalledOnce();
+    expect(failed.mock.calls[0]![0].detail).toEqual({
+      sourceUrl: SOURCE,
+      error: { code: 'online.network', operation: 'online.open', retryable: true },
+    });
+    await expect(transport.fetch(SOURCE, { method: 'HEAD' })).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(failed).toHaveBeenCalledOnce();
+  } finally {
+    transport.close?.();
+    eventDispatcher.off(MOKE_REMOTE_SOURCE_FAILED, failed);
+  }
+});
+
+it('does not show an error when a reader is closed during a pending range', async () => {
+  const failed = vi.fn();
+  eventDispatcher.on(MOKE_REMOTE_SOURCE_FAILED, failed);
+  const transport = createMokeRemoteSourceTransport(
+    SOURCE,
+    () => new Promise<Response>(() => {}),
+  )!;
+  try {
+    const pending = transport.fetch(SOURCE, { method: 'HEAD' });
+    transport.close?.();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(failed).not.toHaveBeenCalled();
+  } finally {
+    eventDispatcher.off(MOKE_REMOTE_SOURCE_FAILED, failed);
+  }
 });
 
 describe('Moke online source authorization', () => {
