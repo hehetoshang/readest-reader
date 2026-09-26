@@ -6,9 +6,12 @@ use tauri::{
 
 pub use models::*;
 
-#[cfg(desktop)]
+// OpenHarmony is a Tauri mobile target, but this plugin has no ArkTS native
+// binding. Its desktop implementation already provides the explicit OHOS
+// unsupported/no-op behavior used by the embedded reader.
+#[cfg(any(desktop, target_env = "ohos"))]
 mod desktop;
-#[cfg(mobile)]
+#[cfg(all(mobile, not(target_env = "ohos")))]
 mod mobile;
 
 mod commands;
@@ -21,9 +24,9 @@ pub use error::{Error, Result};
 use std::path::PathBuf;
 use tauri::AppHandle;
 
-#[cfg(desktop)]
+#[cfg(any(desktop, target_env = "ohos"))]
 use desktop::NativeBridge;
-#[cfg(mobile)]
+#[cfg(all(mobile, not(target_env = "ohos")))]
 use mobile::NativeBridge;
 
 /// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the native-bridge APIs.
@@ -102,9 +105,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::icloud_ensure_downloaded,
         ])
         .setup(|app, api| {
-            #[cfg(mobile)]
+            #[cfg(all(mobile, not(target_env = "ohos")))]
             let native_bridge = mobile::init(app, api)?;
-            #[cfg(desktop)]
+            #[cfg(any(desktop, target_env = "ohos"))]
             let native_bridge = desktop::init(app, api)?;
             app.manage(native_bridge);
             app.manage(DirectoryCallbackState::<R>::default());
