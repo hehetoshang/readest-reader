@@ -5,9 +5,11 @@ use tauri::{
 
 pub use models::*;
 
-#[cfg(desktop)]
+// OpenHarmony is a Tauri mobile target but has no native TTS binding yet.
+// Route it through the existing unsupported-platform implementation.
+#[cfg(any(desktop, target_env = "ohos"))]
 mod desktop;
-#[cfg(mobile)]
+#[cfg(all(mobile, not(target_env = "ohos")))]
 mod mobile;
 
 mod commands;
@@ -16,9 +18,9 @@ mod models;
 
 pub use error::{Error, Result};
 
-#[cfg(desktop)]
+#[cfg(any(desktop, target_env = "ohos"))]
 use desktop::NativeTts;
-#[cfg(mobile)]
+#[cfg(all(mobile, not(target_env = "ohos")))]
 use mobile::NativeTts;
 
 /// Extensions to [`tauri::App`], [`tauri::AppHandle`] and [`tauri::Window`] to access the native-tts APIs.
@@ -54,9 +56,9 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::playout_position,
         ])
         .setup(|app, api| {
-            #[cfg(mobile)]
+            #[cfg(all(mobile, not(target_env = "ohos")))]
             let native_tts = mobile::init(app, api)?;
-            #[cfg(desktop)]
+            #[cfg(any(desktop, target_env = "ohos"))]
             let native_tts = desktop::init(app, api)?;
             app.manage(native_tts);
             Ok(())
