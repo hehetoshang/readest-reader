@@ -208,11 +208,11 @@ const ParagraphOverlay: React.FC<ParagraphOverlayProps> = ({
       blockSize: layoutContext.vertical ? 'fit-content' : undefined,
       minInlineSize: layoutContext.vertical ? '5.25rem' : undefined,
       maxInlineSize: layoutContext.vertical
-        ? `min(calc(100dvh - ${topInset + bottomInset + 80}px), 24rem)`
+        ? `min(calc(var(--reader-viewport-height) - ${topInset + bottomInset + 80}px), 24rem)`
         : undefined,
       maxBlockSize: layoutContext.vertical
         ? 'min(calc(100vw - 1.5rem), 28rem)'
-        : `min(calc(100dvh - ${topInset + bottomInset + 132}px), 38rem)`,
+        : `min(calc(var(--reader-viewport-height) - ${topInset + bottomInset + 132}px), 38rem)`,
       marginInline: 'auto',
     } as React.CSSProperties;
   }, [appService?.hasSafeAreaInset, gridInsets.bottom, gridInsets.top, layoutContext.vertical]);

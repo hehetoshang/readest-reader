@@ -1,3 +1,4 @@
+import '@/utils/polyfill';
 import Head from 'next/head';
 
 import Reader from '@/app/reader/components/Reader';
