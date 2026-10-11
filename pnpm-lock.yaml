@@ -145,6 +145,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      core-js:
+        specifier: ^3.50.0
+        version: 3.50.0
       dayjs:
         specifier: ^1.11.13
         version: 1.11.20
@@ -2328,6 +2331,9 @@ packages:
 
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
+
+  core-js@3.50.0:
+    resolution: {integrity: sha512-BRWgOLKkFeCgRudR6zrs8p9XJZcE14grzKMMssoYrk6krtuEZ7MTKPIY5RzOnqsEKIR9kst7wNzphttraT+Yqw==}
 
   cpx2@8.0.0:
     resolution: {integrity: sha512-RxD9jrSVNSOmfcbiPlr3XnKbUKH9K1w2HCv0skczUKhsZTueiDBecxuaSAKQkYSLQaGVA4ZQJZlTj5hVNNEvKg==}
@@ -5815,6 +5821,8 @@ snapshots:
   content-type@2.0.0: {}
 
   convert-source-map@2.0.0: {}
+
+  core-js@3.50.0: {}
 
   cpx2@8.0.0:
     dependencies:
