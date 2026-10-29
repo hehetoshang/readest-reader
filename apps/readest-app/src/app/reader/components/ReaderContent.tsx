@@ -39,7 +39,7 @@ import {
   type MokeRemoteSourceErrorDetail,
 } from '@/services/mokeRemoteSource';
 import { useAuth } from '@/context/AuthContext';
-import { resolveReaderReturnTarget } from '@/utils/readerBack';
+import { closeReaderAndNavigateBack, navigateReaderBack } from '@/utils/readerBack';
 
 import useBooksManager from '../hooks/useBooksManager';
 import useBookShortcuts from '../hooks/useBookShortcuts';
@@ -165,10 +165,6 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
           setErrorLoading(true);
           eventDispatcher.dispatch('toast', {
             message: _('Unable to open book'),
-            callback: async () => {
-              const service = await envConfig.getAppService();
-              await closeReaderWindowOrGoToLibrary(service, router);
-            },
             timeout: 2000,
             type: 'error',
           });
@@ -216,10 +212,6 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       }
       eventDispatcher.dispatch('toast', {
         message: _('Unable to open book'),
-        callback: async () => {
-          const service = await envConfig.getAppService();
-          await closeReaderWindowOrGoToLibrary(service, router);
-        },
         timeout: 2000,
         type: 'error',
       });
@@ -462,30 +454,23 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     clearViewState(bookKey);
   };
 
-  const navigateBackToLibrary = async () => {
-    const returnTarget = resolveReaderReturnTarget(window.location.search);
-    if (returnTarget.kind === 'moke') {
-      const runtimePlatform = window.__MOKE_RUNTIME_PLATFORM;
-      if (runtimePlatform === 'android' || runtimePlatform === 'ohos') {
-        try {
-          await invoke('moke_navigate', { path: returnTarget.path });
-          return;
-        } catch (error) {
-          console.warn('moke_navigate failed, falling back to full-document navigation:', error);
-        }
-      }
-      if (
+  const navigateBackToLibrary = async (recover = false) => {
+    await navigateReaderBack({
+      search: window.location.search,
+      runtimePlatform: window.__MOKE_RUNTIME_PLATFORM,
+      recover,
+      isReaderWindow:
         isTauriAppPlatform() &&
-        appService?.hasWindow &&
-        getCurrentWindow().label !== 'main'
-      ) {
-        await closeReaderWindowOrGoToLibrary(appService, router);
-      } else {
-        window.location.assign(returnTarget.path);
-      }
-      return;
-    }
-    navigateToLibrary(router, '', undefined, true);
+        appService?.hasWindow === true &&
+        getCurrentWindow().label !== 'main',
+      navigateMoke: (path) => invoke('moke_navigate', { path }),
+      closeReaderOrGoToLibrary: () => closeReaderWindowOrGoToLibrary(appService, router),
+      navigateReadestLibrary: () => navigateToLibrary(router, '', undefined, true),
+      navigateDocument: (path) => window.location.assign(path),
+      onNativeNavigationError: (error) => {
+        console.warn('moke_navigate failed, falling back to full-document navigation:', error);
+      },
+    });
   };
 
   const saveSettingsAndGoToLibrary = () => {
@@ -562,6 +547,18 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     }
   };
 
+  const handleRecoverToLibrary = async () => {
+    try {
+      // Only failed/empty-reader recovery has a deadline. Normal reading
+      // still waits for progress persistence before leaving the document.
+      await closeReaderAndNavigateBack(() => handleCloseBooks(), () => navigateBackToLibrary(true), 1500);
+    } catch (error) {
+      // A book that never opened may have no configuration to save. Its
+      // best-effort cleanup must not strand the user on the error screen.
+      console.warn('Failed to close the unavailable book:', error);
+    }
+  };
+
   if (remoteSourceError) {
     return (
       <div className='hero hero-content full-height px-6 text-center'>
@@ -591,10 +588,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
             </button>
             <button
               className='btn btn-outline'
-              onClick={async () => {
-                await handleCloseBooks();
-                await navigateBackToLibrary();
-              }}
+              onClick={handleRecoverToLibrary}
             >
               {_('Go Back')} · {_('Download')}
             </button>
@@ -604,10 +598,28 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     );
   }
 
+  if (errorLoading) {
+    return (
+      <div className='hero hero-content full-height px-6 text-center'>
+        <div className='max-w-md'>
+          <h1 className='text-xl font-semibold'>{_('Unable to open book')}</h1>
+          <button className='btn btn-primary mt-6' onClick={handleRecoverToLibrary}>
+            {_('Go Back')}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (!bookKeys || bookKeys.length === 0) {
     return (
-      <div className='hero hero-content full-height'>
-        <Spinner loading={true} />
+      <div className='hero hero-content full-height text-center'>
+        <div>
+          <Spinner loading={true} />
+          <button className='btn btn-outline mt-6' onClick={handleRecoverToLibrary}>
+            {_('Go Back')}
+          </button>
+        </div>
       </div>
     );
   }
