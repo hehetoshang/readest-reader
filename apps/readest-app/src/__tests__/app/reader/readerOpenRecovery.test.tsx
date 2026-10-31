@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SystemSettings } from '@/types/settings';
 
@@ -26,7 +27,8 @@ const mocks = vi.hoisted(() => {
     setBookKeys: vi.fn(), getViewSettings: vi.fn(),
   };
   return {
-    service, settingsStore, libraryStore, bookDataStore, readerStore,
+    service, envService: service as typeof service | null,
+    settingsStore, libraryStore, bookDataStore, readerStore,
     envConfig: { getAppService: vi.fn(async () => service) },
     router: { replace: vi.fn(), push: vi.fn() },
     bookKeys: [] as string[], windowLabel: 'main',
@@ -44,7 +46,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => mocks.router,
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
-vi.mock('@/context/EnvContext', () => ({ useEnv: () => ({ envConfig: mocks.envConfig, appService: mocks.service }) }));
+vi.mock('@/context/EnvContext', () => ({ useEnv: () => ({ envConfig: mocks.envConfig, appService: mocks.envService }) }));
 vi.mock('@/context/AuthContext', () => ({ useAuth: () => ({ user: null }) }));
 vi.mock('@/store/settingsStore', () => ({ useSettingsStore: Object.assign(() => mocks.settingsStore, { getState: () => mocks.settingsStore }) }));
 vi.mock('@/store/libraryStore', () => ({ useLibraryStore: Object.assign(() => mocks.libraryStore, { getState: () => mocks.libraryStore }) }));
@@ -104,10 +106,13 @@ import ReaderContent from '@/app/reader/components/ReaderContent';
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.bookKeys = [];
+  mocks.envService = mocks.service;
   mocks.windowLabel = 'main';
   mocks.service.hasWindow = false;
   mocks.service.isDesktopApp = false;
+  vi.useFakeTimers();
   mocks.settingsStore.saveSettings.mockResolvedValue(undefined);
+  mocks.service.importBook.mockRejectedValue(new Error('Unsupported or corrupted book file'));
   mocks.readerStore.initViewState.mockResolvedValue(undefined);
   window.__MOKE_EMBEDDED = true;
   window.__MOKE_RUNTIME_PLATFORM = 'android';
@@ -117,46 +122,121 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   delete window.__MOKE_EMBEDDED;
   delete window.__MOKE_RUNTIME_PLATFORM;
   window.OPEN_WITH_FILES = null;
 });
 
-describe('Reader open recovery', () => {
-  it('keeps a return action after importing every file failed with zero book keys', async () => {
+async function renderReader() {
+  await act(async () => {
     render(<ReaderContent settings={{} as SystemSettings} />);
-    await screen.findByRole('heading', { name: 'Unable to open book' });
-    const back = screen.getByRole('button', { name: 'Go Back' });
+  });
+}
+
+async function finishErrorNotice() {
+  await act(async () => vi.advanceTimersByTimeAsync(2000));
+}
+
+describe('Reader open recovery', () => {
+  it('automatically returns after a failed import without a separate content button', async () => {
+    await renderReader();
+    expect(screen.getByRole('heading', { name: 'Unable to open book' })).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Go Back' })).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
-    fireEvent.click(back);
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('moke_navigate', { path: '/library' }));
+    expect(mocks.toast).toHaveBeenCalledWith('toast', expect.objectContaining({
+      message: 'Unable to open book', timeout: 2000, type: 'error',
+    }));
+    await act(async () => vi.advanceTimersByTimeAsync(1999));
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('moke_navigate', { path: '/library' });
     expect(mocks.closeReaderWindowOrGoToLibrary).not.toHaveBeenCalled();
     expect(mocks.navigateToLibrary).not.toHaveBeenCalled();
+  });
+
+  it('recovers only once when StrictMode replays mount effects', async () => {
+    await act(async () => {
+      render(<StrictMode><ReaderContent settings={{} as SystemSettings} /></StrictMode>);
+    });
+    await finishErrorNotice();
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('moke_navigate', { path: '/library' });
   });
 
   it('uses the same recovery when initializing an existing book fails', async () => {
     window.history.replaceState({}, '', '/readest/reader?moke=1&mokeReturnTo=%2Flibrary&ids=missing');
     mocks.bookKeys = ['missing-key'];
     mocks.readerStore.initViewState.mockRejectedValue(new Error('Book not found'));
-    render(<ReaderContent settings={{} as SystemSettings} />);
-    await screen.findByRole('heading', { name: 'Unable to open book' });
-    fireEvent.click(screen.getByRole('button', { name: 'Go Back' }));
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('moke_navigate', { path: '/library' }));
+    await renderReader();
+    expect(screen.getByRole('heading', { name: 'Unable to open book' })).not.toBeNull();
+    await finishErrorNotice();
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('moke_navigate', { path: '/library' });
   });
 
-  it('lets an empty reader return even while bootstrap has not produced a book', async () => {
+  it('returns an empty route without displaying a standalone back button', async () => {
     window.history.replaceState({}, '', '/readest/reader?moke=1&mokeReturnTo=%2Flibrary');
-    render(<ReaderContent settings={{} as SystemSettings} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Go Back' }));
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('moke_navigate', { path: '/library' }));
+    await renderReader();
+    expect(screen.queryByRole('button', { name: 'Go Back' })).toBeNull();
+    await finishErrorNotice();
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('moke_navigate', { path: '/library' });
+  });
+
+  it('uses the ready native service when recovering an initially empty desktop reader', async () => {
+    mocks.envService = null;
+    mocks.service.hasWindow = true;
+    mocks.service.isDesktopApp = true;
+    mocks.windowLabel = 'reader-1';
+    window.__MOKE_RUNTIME_PLATFORM = 'windows';
+    window.history.replaceState({}, '', '/readest/reader?moke=1&mokeReturnTo=%2Flibrary');
+    const view = render(<ReaderContent settings={{} as SystemSettings} />);
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    mocks.envService = mocks.service;
+    await act(async () => view.rerender(<ReaderContent settings={{} as SystemSettings} />));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(mocks.closeWindow).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
+    expect(mocks.closeReaderWindowOrGoToLibrary).toHaveBeenCalledWith(mocks.service, mocks.router);
+    expect(mocks.closeWindow).toHaveBeenCalledOnce();
+  });
+
+  it.each(['mobile', 'desktop'])('does not cancel a slow valid %s import', async (platform) => {
+    mocks.service.importBook.mockImplementation(() => new Promise(() => {}));
+    if (platform === 'desktop') {
+      window.history.replaceState({}, '', '/readest/reader');
+      window.OPEN_WITH_FILES = ['/books/slow.epub'];
+      window.__MOKE_RUNTIME_PLATFORM = 'windows';
+    }
+    await renderReader();
+    expect(screen.getByRole('status')).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(10000));
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.closeReaderWindowOrGoToLibrary).not.toHaveBeenCalled();
+  });
+
+  it('cancels pending automatic recovery when the reader is unmounted', async () => {
+    await renderReader();
+    cleanup();
+    await finishErrorNotice();
+    expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('does not trap the error page when best-effort settings persistence rejects', async () => {
     mocks.settingsStore.saveSettings.mockRejectedValue(new Error('storage unavailable'));
-    render(<ReaderContent settings={{} as SystemSettings} />);
-    await screen.findByRole('heading', { name: 'Unable to open book' });
-    fireEvent.click(screen.getByRole('button', { name: 'Go Back' }));
-    await waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith('moke_navigate', { path: '/library' }));
+    await renderReader();
+    await finishErrorNotice();
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('moke_navigate', { path: '/library' });
+  });
+
+  it('bounds failed-open cleanup before returning to the host', async () => {
+    mocks.settingsStore.saveSettings.mockImplementation(() => new Promise(() => {}));
+    await renderReader();
+    await finishErrorNotice();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1499));
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith('moke_navigate', { path: '/library' });
   });
 
   it('closes a dedicated desktop reader through the existing window recovery', async () => {
@@ -164,10 +244,9 @@ describe('Reader open recovery', () => {
     mocks.service.isDesktopApp = true;
     mocks.windowLabel = 'reader-1';
     window.__MOKE_RUNTIME_PLATFORM = 'windows';
-    render(<ReaderContent settings={{} as SystemSettings} />);
-    await screen.findByRole('heading', { name: 'Unable to open book' });
-    fireEvent.click(screen.getByRole('button', { name: 'Go Back' }));
-    await waitFor(() => expect(mocks.closeReaderWindowOrGoToLibrary).toHaveBeenCalledWith(mocks.service, mocks.router));
+    await renderReader();
+    await finishErrorNotice();
+    expect(mocks.closeReaderWindowOrGoToLibrary).toHaveBeenCalledWith(mocks.service, mocks.router);
     expect(mocks.showMainWindow).toHaveBeenCalledOnce();
     expect(mocks.closeWindow).toHaveBeenCalledOnce();
     expect(mocks.invoke).not.toHaveBeenCalled();
@@ -180,10 +259,9 @@ describe('Reader open recovery', () => {
     window.__MOKE_RUNTIME_PLATFORM = 'windows';
     window.history.replaceState({}, '', '/readest/reader');
     window.OPEN_WITH_FILES = ['/books/bad.azw3'];
-    render(<ReaderContent settings={{} as SystemSettings} />);
-    await screen.findByRole('heading', { name: 'Unable to open book' });
-    fireEvent.click(screen.getByRole('button', { name: 'Go Back' }));
-    await waitFor(() => expect(mocks.closeWindow).toHaveBeenCalledOnce());
+    await renderReader();
+    await finishErrorNotice();
+    expect(mocks.closeWindow).toHaveBeenCalledOnce();
     expect(mocks.showMainWindow).toHaveBeenCalledOnce();
     expect(mocks.router.replace).not.toHaveBeenCalled();
   });
