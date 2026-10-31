@@ -559,6 +559,28 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     }
   };
 
+  useEffect(() => {
+    // Failed opens have no book chrome to return through. Keep the existing
+    // error toast, then leave through the host-aware recovery path instead of
+    // adding a second navigation button to the content area. An empty route
+    // with no source should also return, while a real import may keep loading.
+    const requestedBook =
+      ids ||
+      searchParams?.get('ids') ||
+      window.location.pathname.split('/reader/')[1] ||
+      window.OPEN_WITH_FILES?.length ||
+      mokeOpenFilesRef.current?.length ||
+      getMokeEmbeddedFiles().length;
+    const emptyWithoutSource = bookKeys.length === 0 && !requestedBook;
+    if (remoteSourceError || (!errorLoading && !emptyWithoutSource)) return;
+
+    const timer = setTimeout(() => {
+      void handleRecoverToLibrary();
+    }, 2000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [errorLoading, remoteSourceError, bookKeys.length, appService]);
+
   if (remoteSourceError) {
     return (
       <div className='hero hero-content full-height px-6 text-center'>
@@ -603,9 +625,6 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       <div className='hero hero-content full-height px-6 text-center'>
         <div className='max-w-md'>
           <h1 className='text-xl font-semibold'>{_('Unable to open book')}</h1>
-          <button className='btn btn-primary mt-6' onClick={handleRecoverToLibrary}>
-            {_('Go Back')}
-          </button>
         </div>
       </div>
     );
@@ -614,12 +633,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   if (!bookKeys || bookKeys.length === 0) {
     return (
       <div className='hero hero-content full-height text-center'>
-        <div>
-          <Spinner loading={true} />
-          <button className='btn btn-outline mt-6' onClick={handleRecoverToLibrary}>
-            {_('Go Back')}
-          </button>
-        </div>
+        <Spinner loading={true} />
       </div>
     );
   }
