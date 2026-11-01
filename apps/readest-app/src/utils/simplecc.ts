@@ -1,13 +1,25 @@
 import init, { simplecc } from '@simplecc/simplecc_wasm';
 import { ConvertChineseVariant } from '@/types/book';
 
-let initialized = false;
+let initPromise: Promise<void> | null = null;
 
-const initSimpleCC = async () => {
-  if (initialized) return;
-
-  await init('/vendor/simplecc/simplecc_wasm_bg.wasm');
-  initialized = true;
+const initSimpleCC = (): Promise<void> => {
+  if (!initPromise) {
+    // Keep the WASM URL under the same base path as the embedded Reader page.
+    const basePath = (process.env['NEXT_PUBLIC_EMBEDDED_BASE_PATH'] || '/readest').replace(
+      /\/+$/,
+      '',
+    );
+    initPromise = init({
+      module_or_path: `${basePath}/vendor/simplecc/simplecc_wasm_bg.wasm`,
+    })
+      .then(() => {})
+      .catch((error) => {
+        initPromise = null;
+        throw error;
+      });
+  }
+  return initPromise;
 };
 
 const convertReverseMap: Record<ConvertChineseVariant, ConvertChineseVariant> = {
