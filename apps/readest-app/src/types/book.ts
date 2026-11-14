@@ -86,6 +86,9 @@ export interface ImportBookOptions {
 }
 
 export interface Book {
+  /** Managed Reader runtime/config identity; never substituted for original book bytes. */
+  mokeIdentity?: string;
+  mokeContentHash?: string;
   // if Book is a remote book we just lazy load the book content via url
   url?: string;
   // if Book is a transient local book we can load the book content via filePath

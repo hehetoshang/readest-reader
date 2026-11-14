@@ -1,4 +1,5 @@
 import { isMokeRemoteSourceUrl } from '@/services/mokeRemoteSource';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 import { create } from 'zustand';
 
 import {
@@ -185,6 +186,8 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     isPrimary = true,
     reload = false,
   ) => {
+    const launch = getMokeHostLaunch();
+    if (launch && !launch.isActive()) return;
     // 防重入：已经正在加载或已初始化（且不是显式 reload）时直接跳过，
     // 避免 book:opened 事件被重复发送。
     const viewState = get().viewStates[key];
@@ -293,7 +296,11 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       // scans every chapter and defeats on-demand reading on a cold open.
       const onlineSource = isMokeRemoteSourceUrl(book.url || '');
       // Load cached book navigation (TOC + section fragments) or compute and persist.
-      if (!onlineSource && book.format === 'EPUB' && bookDoc.rendition?.layout !== 'pre-paginated') {
+      if (
+        !onlineSource &&
+        book.format === 'EPUB' &&
+        bookDoc.rendition?.layout !== 'pre-paginated'
+      ) {
         const cachedNav = await cachedNavPromise;
         if (isBookNavCacheCurrent(cachedNav) && process.env['NODE_ENV'] === 'production') {
           hydrateBookNav(bookDoc, cachedNav);
@@ -470,6 +477,8 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     fraction: number,
     mokeNavigation?: MokeAnnotationNavigationContext | null,
   ) => {
+    const launch = getMokeHostLaunch();
+    if (launch && !launch.isActive()) return;
     const id = key.split('-')[0]!;
     const bookData = useBookDataStore.getState().booksData[id];
     const viewState = get().viewStates[key];
@@ -534,7 +543,11 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         },
         mokeNavigation ?? null,
       ),
-    );
+    ).catch(() => {
+      // Relocate is synchronous. Preserve uncertainty if local persistence or
+      // host delivery fails, and never turn an unobserved rejection into return.
+      launch?.markUnknown();
+    });
 
     // Write progress to the standalone store. This is the only setState on
     // the hot swipe path that the previous implementation routed through

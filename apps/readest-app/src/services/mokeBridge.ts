@@ -8,6 +8,8 @@
 
 import type { Book } from '@/types/book';
 import { mokeProgressStorageKey } from '@/helpers/mokeLaunchContext';
+import { getMokeHostLaunch, hasMokeHostLookup } from './mokeHostLaunch';
+import { progressPayload, writeManagedProgress } from './mokeProgressIdentity';
 
 // ---------------------------------------------------------------------------
 // Tauri invoke helper
@@ -338,11 +340,7 @@ async function validateProgressResponse(response: Response): Promise<void> {
   } catch {
     throw new MokeProgressSaveError('progress.invalid_response', response.status);
   }
-  if (
-    typeof envelope.err === 'string' &&
-    envelope.err !== '' &&
-    envelope.err !== 'ok'
-  ) {
+  if (typeof envelope.err === 'string' && envelope.err !== '' && envelope.err !== 'ok') {
     const serverCode = SAFE_ERROR_CODE.test(envelope.err) ? envelope.err : 'invalid';
     throw new MokeProgressSaveError(`progress.api.${serverCode}`, response.status);
   }
@@ -480,6 +478,27 @@ function ensureProgressFlushListeners(): void {
 
 /** Events that should be throttled to avoid flooding extension backends. */
 const THROTTLED_EVENTS = new Set(['page:changed']);
+let managedProgressTimer: ReturnType<typeof setTimeout> | null = null;
+let managedProgress: Record<string, unknown> | null = null;
+let managedClosing = false;
+let managedProgressFailure: unknown;
+
+function flushManagedProgress(): Promise<void> {
+  if (managedProgressTimer) clearTimeout(managedProgressTimer);
+  managedProgressTimer = null;
+  const payload = managedProgress;
+  managedProgress = null;
+  if (managedProgressFailure) return Promise.reject(managedProgressFailure);
+  if (!payload) return Promise.resolve();
+  const launch = getMokeHostLaunch();
+  if (!launch) return Promise.reject(new Error('reader_invalid_launch'));
+  return Promise.resolve()
+    .then(() => launch.progress(payload))
+    .catch((error: unknown) => {
+      managedProgressFailure = error;
+      throw error;
+    });
+}
 
 /**
  * 向 Moke 宿主上报阅读器事件。高频事件（如 page:changed）自动节流。
@@ -488,6 +507,45 @@ const THROTTLED_EVENTS = new Set(['page:changed']);
  * 调用方（尤其是关闭流程）应 await 此返回值，确保事件在窗口销毁前发出。
  */
 export function emitReaderEvent(event: string, data: Record<string, unknown>): Promise<void> {
+  const launch = getMokeHostLaunch();
+  if (hasMokeHostLookup() && !launch) return Promise.reject(new Error('reader_invalid_launch'));
+  if (launch) {
+    if (event === 'page:changed') {
+      // Stop accepting relocations after the explicit trailing drain. Late
+      // events cannot resurrect a returned/revoked document or enter a new source.
+      if (managedClosing || !launch.isActive()) return Promise.resolve();
+      let payload: Record<string, unknown>;
+      try {
+        payload = progressPayload(data, launch);
+        if (!isAnnotationNavigationEvent(data))
+          writeManagedProgress(launch, payload, window.localStorage);
+      } catch (error) {
+        launch.markUnknown();
+        window.dispatchEvent(
+          new CustomEvent<MokeReaderErrorDetail>('moke:reader-error', {
+            detail: { code: 'progress.unconfirmed', operation: 'progress.save', retryable: false },
+          }),
+        );
+        return Promise.reject(error);
+      }
+      managedProgress = payload;
+      if (managedProgressTimer) clearTimeout(managedProgressTimer);
+      managedProgressTimer = setTimeout(() => {
+        void flushManagedProgress().catch(() => launch.markUnknown());
+      }, THROTTLE_MS);
+      return Promise.resolve();
+    }
+    if (event === 'book:closed') {
+      managedClosing = true;
+      cancelMokeAnnotationNavigation();
+      return flushManagedProgress()
+        .then(() => launch.close())
+        .then(() => _doEmit(event, data));
+    }
+    // Managed progress has exactly one remote owner: native host take/ACK.
+    // Never pass managed page events through the legacy direct-save path.
+    return _doEmit(event, data);
+  }
   if (!isEmbedded()) return Promise.resolve();
 
   const annotationNavigationEvent = event === 'page:changed' && isAnnotationNavigationEvent(data);

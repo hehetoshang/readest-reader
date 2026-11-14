@@ -3,6 +3,9 @@ import { isTauriAppPlatform } from '@/services/environment';
 import { mokeTauriRangeFetch } from '@/services/mokeTauriRangeFetch';
 import type { RemoteFileTransport } from '@/utils/file';
 import { eventDispatcher } from '@/utils/event';
+import { getMokeHostLaunch, hasMokeHostLookup } from './mokeHostLaunch';
+import { parseLibraryBaseUrl } from './mokeLibraryBase';
+import { nativeHttpRequest } from './mokeNativeHttp';
 
 const EPUB_MIME = 'application/epub+zip';
 const LEGACY_EPUB_MIME = 'application/octet-stream';
@@ -72,22 +75,7 @@ function responseError(status: number): MokeRemoteSourceError {
 
 function parseServerOrigin(value: string): string | null {
   try {
-    // Moke deliberately carries the persisted spelling so progress keys remain
-    // stable. Canonicalize it again at this trust boundary: URL removes an
-    // explicit default port (for example HTTPS :443), so comparing `origin`
-    // back to the raw launch parameter rejects a valid source before any I/O.
-    const url = new URL(value.trim());
-    if (
-      !['http:', 'https:'].includes(url.protocol) ||
-      url.username ||
-      url.password ||
-      !/^\/+$/u.test(url.pathname) ||
-      url.search ||
-      url.hash
-    ) {
-      return null;
-    }
-    return url.origin;
+    return parseLibraryBaseUrl(value).baseUrl;
   } catch {
     return null;
   }
@@ -103,7 +91,9 @@ export function validateMokeRemoteSource(
   serverUrl: string,
   bookId: string,
 ): MokeRemoteSourceContext {
-  const origin = parseServerOrigin(serverUrl);
+  const base = parseServerOrigin(serverUrl);
+  const origin = base ? new URL(base).origin : null;
+  const prefix = base ? new URL(base).pathname.replace(/\/$/, '') : '';
   const normalizedBookId = bookId.trim();
   if (!origin || !/^\d+$/.test(normalizedBookId)) {
     throw new MokeRemoteSourceError('online.response_invalid');
@@ -119,7 +109,7 @@ export function validateMokeRemoteSource(
   const revisionValues = source.searchParams.getAll('revision');
   const queryKeys = [...source.searchParams.keys()];
   const isBootstrapResource =
-    source.pathname === `/read/resource/${normalizedBookId}.epub` &&
+    source.pathname === `${prefix}/read/resource/${normalizedBookId}.epub` &&
     queryKeys.length === 1 &&
     queryKeys[0] === 'revision' &&
     revisionValues.length === 1 &&
@@ -128,7 +118,7 @@ export function validateMokeRemoteSource(
   // Supporting the same route keeps pre-bootstrap Talebook 3.7+ compatible;
   // the transport still requires an exact 206 before Reader sees the source.
   const isLegacyResource =
-    source.pathname === `/api/book/${normalizedBookId}.epub` && queryKeys.length === 0;
+    source.pathname === `${prefix}/api/book/${normalizedBookId}.epub` && queryKeys.length === 0;
   if (
     source.origin !== origin ||
     source.username ||
@@ -147,16 +137,9 @@ export function validateMokeRemoteSource(
 }
 
 export function isMokeRemoteSourceUrl(sourceUrl: string): boolean {
-  if (typeof window === 'undefined' || !window.__MOKE_EMBEDDED) return false;
-  const serverUrl = window.__MOKE_SOURCE_SERVER_URL;
-  const bookId = window.__MOKE_BOOK_ID;
-  if (!serverUrl || !bookId) return false;
-  try {
-    validateMokeRemoteSource(sourceUrl, serverUrl, String(bookId));
-    return true;
-  } catch {
-    return false;
-  }
+  const launch = getMokeHostLaunch();
+  if (launch) return launch.isActive() && sourceUrl === launch.claim.resource.url;
+  return false;
 }
 
 export function mokeRemoteSourceErrorDetail(error: unknown): MokeRemoteSourceErrorDetail | null {
@@ -182,6 +165,20 @@ export function mokeRemoteSourceErrorDetail(error: unknown): MokeRemoteSourceErr
 }
 
 async function defaultMokeFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const launch = getMokeHostLaunch();
+  if (launch) {
+    return nativeHttpRequest(
+      url,
+      {
+        ...init,
+        maxRedirections: 0,
+        connectTimeout: 8000,
+        proxy: null,
+        danger: { acceptInvalidCerts: true, acceptInvalidHostnames: true },
+      },
+      launch.resourceLifecycle(url, (init.method || 'GET').toUpperCase()),
+    );
+  }
   if (!isTauriAppPlatform()) {
     return window.fetch(url, {
       ...init,
@@ -248,11 +245,23 @@ export function createMokeRemoteSourceTransport(
   sourceUrl: string,
   fetchImpl: MokeRemoteFetch = defaultMokeFetch,
 ): RemoteFileTransport | null {
+  const launch = getMokeHostLaunch();
+  // Embedded HTTP always requires a native claim. An external query cannot
+  // manufacture a source or fall back to the generic RemoteFile transport.
+  if (
+    !launch &&
+    (hasMokeHostLookup() || (typeof window !== 'undefined' && window.__MOKE_EMBEDDED))
+  ) {
+    throw new MokeRemoteSourceError('online.response_invalid');
+  }
   if (typeof window === 'undefined' || !window.__MOKE_EMBEDDED) return null;
-  const serverUrl = window.__MOKE_SOURCE_SERVER_URL;
-  const bookId = window.__MOKE_BOOK_ID;
+  const serverUrl = launch?.claim.resource.effectiveBaseUrl;
+  const bookId = launch?.claim.bookId;
   if (!serverUrl) return null;
   if (!bookId) throw new MokeRemoteSourceError('online.response_invalid');
+  launch?.assertActive();
+  if (launch && sourceUrl !== launch.claim.resource.url)
+    throw new MokeRemoteSourceError('online.response_invalid');
 
   const context = validateMokeRemoteSource(sourceUrl, serverUrl, String(bookId));
   // Import and rendering reopen the same URL. Include both phases instead of
@@ -266,8 +275,8 @@ export function createMokeRemoteSourceTransport(
     };
   }
   const activeControllers = new Map<AbortController, () => void>();
-  let expectedSize: number | null = null;
-  let expectedEtag: string | null = null;
+  let expectedSize: number | null = launch?.claim.resource.size ?? null;
+  let expectedEtag: string | null = launch?.claim.resource.etag ?? null;
 
   const releaseAfterBody = (
     response: Response,
@@ -423,6 +432,12 @@ export function createMokeRemoteSourceTransport(
           if (firstByte.byteLength !== 1) {
             throw new MokeRemoteSourceError('online.response_invalid', response.status);
           }
+          if (
+            (expectedSize !== null && size !== expectedSize) ||
+            (expectedEtag !== null && etag !== expectedEtag)
+          ) {
+            throw new MokeRemoteSourceError('online.resource_changed', response.status);
+          }
           expectedSize = size;
           expectedEtag = etag;
           const metrics = window.__MOKE_ONLINE_SOURCE_METRICS;
@@ -541,6 +556,7 @@ export function createMokeRemoteSourceTransport(
             }
           },
           (error) => {
+            if (launch && !launch.isActive()) return false;
             if (error instanceof DOMException && error.name === 'TimeoutError') return true;
             return (
               error instanceof MokeRemoteSourceError &&
@@ -549,11 +565,14 @@ export function createMokeRemoteSourceTransport(
             );
           },
           operation.signal,
+          15_000,
+          !!launch,
         );
       } catch (error) {
-        const failure = error instanceof DOMException && error.name === 'TimeoutError'
-          ? new MokeRemoteSourceError('online.network')
-          : error;
+        const failure =
+          error instanceof DOMException && error.name === 'TimeoutError'
+            ? new MokeRemoteSourceError('online.network')
+            : error;
         const detail = mokeRemoteSourceErrorDetail(failure);
         if (!operation.signal.aborted && detail) {
           // Foliate may catch chapter/resource failures without rejecting its

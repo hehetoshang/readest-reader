@@ -1,0 +1,230 @@
+{
+  "id": "moke.readest.host-launch.v1",
+  "version": 1,
+  "extends": "moke.readest.embed.v1",
+  "progressSchema": "moke.readest.progress.v1",
+  "progressRelaySchema": "moke.readest.host-progress.v1",
+  "requiredCapabilities": [
+    "moke.readest.host-launch.v1",
+    "moke.readest.resource-base.v1",
+    "moke.readest.progress-identity.v1"
+  ],
+  "capabilityAuthority": {
+    "command": "moke_reader_capabilities",
+    "readerManifest": "readest/contract/moke-reader.v1.json",
+    "queryParametersGrantCapabilities": false,
+    "requiresAllCapabilities": true,
+    "legacyReaderPin": "0b75933bde1712bf693ca811b77ba3c921bd05a5",
+    "legacyReaderSupported": false,
+    "gateBefore": ["prefix-bootstrap", "reader-http", "window-open", "navigation"]
+  },
+  "callerAuthority": {
+    "host": "Actual main Webview, fixed shell document and native document generation, authorized by the existing connection authority",
+    "reader": "Actual backend-created target Webview, fixed packaged Reader document and native target document generation",
+    "launchId": "Lookup only; never a bearer permission",
+    "claimToken": "Issued only after actual target caller validation; never persisted",
+    "callerSuppliedWindowLabelAccepted": false,
+    "callerSuppliedDocumentGenerationAccepted": false
+  },
+  "hostAuthFields": {
+    "documentToken": "Existing connection-authority document token",
+    "leaseToken": "Existing active source lease; must not be reconstructed or persisted",
+    "expectedEpoch": "Existing native source session epoch"
+  },
+  "source": {
+    "savedServerId": "Stable SavedServer.id",
+    "entryRevision": "Exact saved entry revision, rechecked from the host repository",
+    "libraryBaseUrl": "Canonical original full library base from the existing base-url parser"
+  },
+  "resource": {
+    "url": "Exact authorized current-book resource URL",
+    "effectiveBaseUrl": "Effective resource library base, preserving the library path prefix",
+    "revision": "string or null for the existing fixed legacy resource route",
+    "size": "Positive safe integer",
+    "etag": "Validated resource ETag"
+  },
+  "reservation": {
+    "launchId": "Host-generated lookup ID",
+    "phase": ["reserved", "sealed", "opening", "claimed", "closing", "returned", "revoked"],
+    "completion": ["pending", "complete", "failed", "unknown"],
+    "source": "source",
+    "bookId": "Current single book ID",
+    "ownerDocumentGeneration": "Actual reserving host document generation",
+    "documentGeneration": "Actual target Reader document generation, zero before binding",
+    "epoch": "Actual reserving source epoch",
+    "lastSequence": "Last accepted Reader progress sequence"
+  },
+  "commands": {
+    "moke_reader_capabilities": {
+      "caller": "host",
+      "requestFields": [],
+      "responseFields": ["schema", "supported", "backendCapabilities", "readerCapabilities", "reason"]
+    },
+    "moke_reader_reserve": {
+      "caller": "host",
+      "requestFields": ["documentToken", "leaseToken", "expectedEpoch", "id", "entryRevision", "bookId"],
+      "response": "reservation"
+    },
+    "moke_reader_check": {
+      "caller": "host",
+      "requestFields": ["documentToken", "leaseToken", "expectedEpoch", "launchId"],
+      "response": "reservation",
+      "terminalObservation": "The same owner may observe its terminal record with the old lease; this does not authorize a new request or restore an active source"
+    },
+    "moke_reader_seal": {
+      "caller": "host",
+      "requestFields": ["documentToken", "leaseToken", "expectedEpoch", "launchId", "resource"],
+      "response": "reservation"
+    },
+    "moke_reader_open": {
+      "caller": "host",
+      "requestFields": ["documentToken", "leaseToken", "expectedEpoch", "launchId"],
+      "response": "reservation",
+      "targetAuthority": "Backend chooses the label and fixed Reader document; create or navigation failure revokes the reservation"
+    },
+    "moke_reader_revoke": {
+      "caller": "host",
+      "requestFields": ["documentToken", "leaseToken", "expectedEpoch", "launchId"],
+      "response": "reservation"
+    },
+    "moke_reader_claim": {
+      "caller": "reader",
+      "requestFields": ["launchId"],
+      "responseExtends": "reservation",
+      "responseFields": ["schema", "claimToken", "resource", "progressOwner"],
+      "progressOwner": "host",
+      "requiredBefore": "The first Reader resource request or progress restore"
+    },
+    "moke_reader_resource_dispatch": {
+      "caller": "reader",
+      "requestFields": ["launchId", "claimToken", "url", "method"],
+      "methods": ["GET", "HEAD"],
+      "urlAuthority": "Exact sealed current-book resource URL only",
+      "responseFields": ["requestId", "epoch"],
+      "pendingOwner": "Existing connection Authority.pending",
+      "requiredBefore": "Every Reader HTTP request for the sealed resource"
+    },
+    "moke_reader_resource_settle": {
+      "caller": "reader",
+      "requestFields": ["launchId", "claimToken", "requestId"],
+      "response": "null",
+      "requires": "The same launch and actual Reader document; real response EOF or confirmed cancellation terminal state, followed by the settle IPC ACK",
+      "finallyOrDocumentDestructionIsTerminalProof": false
+    },
+    "moke_reader_progress": {
+      "caller": "reader",
+      "requestFields": ["launchId", "claimToken", "sequence", "payload"],
+      "payloadSchema": "moke.readest.progress.v1",
+      "response": "reservation"
+    },
+    "moke_reader_progress_take": {
+      "caller": "host",
+      "requestFields": ["documentToken", "leaseToken", "expectedEpoch", "launchId", "sequence"],
+      "responseFields": ["schema", "launchId", "source", "bookId", "ownerDocumentGeneration", "documentGeneration", "epoch", "sequence", "payload"]
+    },
+    "moke_reader_progress_ack": {
+      "caller": "host",
+      "requestFields": ["documentToken", "leaseToken", "expectedEpoch", "launchId", "sequence", "local", "remote"],
+      "writeResults": ["complete", "failed", "unknown"],
+      "response": "reservation"
+    },
+    "moke_reader_closing": {
+      "caller": "reader",
+      "requestFields": ["launchId", "claimToken", "lastSequence"],
+      "response": "reservation"
+    }
+  },
+  "events": {
+    "moke:reader-progress": {
+      "fields": ["launchId", "sequence"],
+      "meaning": "Wake hint; host must take the authoritative payload"
+    },
+    "moke:reader-closing": {
+      "fields": ["launchId", "lastSequence"],
+      "meaning": "Wake hint; host must check authoritative phase and sequence before draining"
+    },
+    "moke:reader-drain-ready": {
+      "fields": ["launchId", "lastSequence"],
+      "target": "The actual backend-bound Reader target",
+      "meaning": "Wake hint after closing progress and existing HTTP tickets settle without unknown; Reader must call closing with the same claim and final sequence to observe the authoritative terminal result",
+      "readerMustListenBefore": "The first closing call",
+      "emitFailure": "Mark the Reader lifecycle unknown without turning an already successful original ticket settle ACK into a failure or replay",
+      "grantsSourceRelease": false
+    }
+  },
+  "progressIdentity": {
+    "persistentFields": ["libraryBaseUrl", "bookId"],
+    "persistentTupleEncoding": "JSON.stringify([canonicalOriginalLibraryBaseUrl, String(bookId)])",
+    "hostCachePrefix": "moke-reader-progress-v1:",
+    "runtimeQueueFields": ["full SourceIdentity", "bookId", "launchId", "requestGeneration", "documentGeneration"],
+    "effectiveResourceBaseChangesPersistentIdentity": false,
+    "launchGenerationChangesPersistentIdentity": false,
+    "emptyNamespaceMigration": "Preserve originals; never infer ownership from the current library",
+    "restoreConflictPolicy": "For the same original full base and book, valid local progress wins unless both timestamps are valid explicit-timezone ISO dates and the remote timestamp is strictly newer; reread the same source local key after the remote response",
+    "remoteOwner": "host",
+    "mutationReplay": false
+  },
+  "progressPayload": {
+    "required": ["schema", "reader", "moke_book_id", "updated_at"],
+    "schema": "moke.readest.progress.v1",
+    "reader": "readest",
+    "moke_book_id": "Must equal the reserved book ID string",
+    "stringFields": ["schema", "reader", "moke_book_id", "reader_book_id", "view_key", "location", "section_href", "chapter", "moke_navigation_id", "moke_navigation_kind", "updated_at"],
+    "nonnegativeFiniteNumberFields": ["page", "total_pages", "progress", "fraction"],
+    "moke_navigation_phase": ["pending", "navigating", "complete"],
+    "additionalFields": false,
+    "maxUtf8JsonBytes": 65536,
+    "transientFieldsNotPersisted": ["moke_navigation_id", "moke_navigation_kind", "moke_navigation_phase"]
+  },
+  "progressSequence": {
+    "first": 1,
+    "increment": 1,
+    "lastSequenceBeforeFirstProgress": 0,
+    "maxOutstandingProgressRecords": 64,
+    "repeatedOrSkippedSequenceAccepted": false
+  },
+  "completion": {
+    "complete": "Observed operation completed with an explicit completion result",
+    "failed": "Observed operation received a definite failure result",
+    "unknown": "Completion is unconfirmed; do not release native occupancy or replay a mutation",
+    "returnedRequires": ["authoritative trailing sequence", "all accepted local and remote progress writes settled", "existing native HTTP tickets settled"],
+    "documentDestructionReleasesSource": false
+  },
+  "sessionRevocation": {
+    "hostStoreSubscription": "bindReaderSourceLifecycle observes source, saved entry revision, session revision, offline and connection changes, then invokes the tracked revokeStaleSources once with each old captured lease",
+    "nativeBeforeHttpPermit": {
+      "GETorPOST": ["/api/user/sign_out"],
+      "POST": ["/api/user/sign_in", "/api/user/sign_up", "/api/user/reset", "/api/welcome"],
+      "routeBase": "Exact routes below the original full library base",
+      "effect": "Synchronously revoke the old Reader generation before an authentication request can change the cookie jar"
+    },
+    "ordinaryBookProgressPostRevokesReader": false,
+    "existingPendingTicketsPreserved": true
+  },
+  "errors": {
+    "reader_unsupported": "The actual packaged Reader does not declare the complete capability group or compatible embed/progress schema",
+    "unsupported": "The actual platform is outside the current native authority support",
+    "reader_busy": "A Reader lease or bounded pending progress queue is still occupied",
+    "reader_invalid_launch": "The launch lookup or owner document/session/epoch does not match",
+    "reader_invalid_book": "The current book ID is outside the accepted numeric ID contract",
+    "reader_invalid_phase": "The requested transition is not valid for this launch phase",
+    "reader_invalid_resource": "The current resource URL, base, book, revision or metadata does not match the sealed contract",
+    "reader_wrong_document": "The actual Webview, exact fixed document or target document generation is not the bound Reader",
+    "reader_invalid_claim": "The claim does not match this bound document or lifecycle phase",
+    "reader_sequence_invalid": "Progress sequence or final sequence is missing, out of order, repeated or inconsistent",
+    "reader_progress_invalid": "The progress wire, book identity, fields or size is invalid",
+    "reader_window_failed": "Window creation failed after native preparation; completion remains unknown",
+    "reader_relay_unknown": "Native relay notification could not be confirmed; completion remains unknown",
+    "reader_launch_unknown": "The launch lifecycle is unconfirmed; do not replay or release it",
+    "inherited": "Existing connection-authority source/document/entry/epoch/lease and IO errors remain authoritative"
+  },
+  "consumerStatus": {
+    "readerHooksConnected": false,
+    "remoteRestoreSnapshotInClaim": false,
+    "requiredReaderHooks": ["claim before resource use or restore", "resource dispatch before HTTP", "resource settle after real EOF or confirmed cancellation terminal state and native ACK", "full local progress identity", "progress relay", "listen for drain-ready before closing", "closing with authoritative final sequence and terminal observation"],
+    "managedAndPrefixProductionGate": "closed",
+    "legacyEmbeddedProductionEntry": "requireHostBoundReaderLaunch remains closed until the host intentionally switches to the new launch controller after Reader integration",
+    "fullDocumentAndMobileOwnershipGate": "closed pending actual platform validation",
+    "readerStage": "TB-456 remains backlog until the coordinator accepts the actual host delivery"
+  }
+}
