@@ -56,6 +56,8 @@ pnpm test:reader-browser
 
 It uses synthetic chapters with the pinned Foliate renderer at desktop and mobile viewport sizes. It verifies instant text visibility and retained page-turn movement, without requiring a Talebook account or native host. This lane does not replace Moke integration or physical e-ink checks.
 
+`pnpm test:page-turn-input` runs the production iframe input handlers, pagination hook and page-turner settings in a separate headless Chromium harness at desktop and mobile viewport sizes. Host IPC, storage and page rendering are explicit doubles using original HTML text. It covers release timing, double clicks, touch compatibility events, click directions, menu behavior and volume interception ownership. Set `TB496_EVIDENCE_DIR` to save screenshots and event traces. This CLI test does not exercise the full Reader route, EPUB loading, Playwright MCP, Android WebView or physical volume keys; those require separate integration/device verification.
+
 For development with hot reload:
 
 ```bash

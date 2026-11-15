@@ -31,8 +31,7 @@ const PageTurnerSettings: React.FC<PageTurnerSettingsProps> = ({ bookKey, onRegi
   const _ = useTranslation();
   const { envConfig, appService } = useEnv();
   const { getViewSettings } = useReaderStore();
-  const { setKeyLearnMode, acquireVolumeKeyInterception, releaseVolumeKeyInterception } =
-    useDeviceControlStore();
+  const { setKeyLearnMode } = useDeviceControlStore();
   const { settings } = useSettingsStore();
   const viewSettings = getViewSettings(bookKey) || settings.globalViewSettings;
   const resetToDefaults = useResetViewSettings();
@@ -120,13 +119,8 @@ const PageTurnerSettings: React.FC<PageTurnerSettingsProps> = ({ bookKey, onRegi
 
   useEffect(() => {
     saveViewSettings(envConfig, bookKey, 'volumeKeysToFlip', volumeKeysToFlip, false, false);
-    if (appService?.isMobileApp) {
-      if (volumeKeysToFlip) {
-        acquireVolumeKeyInterception();
-      } else {
-        releaseVolumeKeyInterception();
-      }
-    }
+    // The reading hook owns interception; opening this panel only persists
+    // the setting, including while TTS temporarily owns the volume keys.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [volumeKeysToFlip]);
 

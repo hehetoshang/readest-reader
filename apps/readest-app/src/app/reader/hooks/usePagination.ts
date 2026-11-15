@@ -207,6 +207,7 @@ export const usePagination = (
   // Reactive subscription: drives the effect dependency array below. The
   // handlers themselves re-read via getState() to avoid stale closures.
   const hardwarePageTurner = useSettingsStore((s) => s.settings.hardwarePageTurner);
+  const volumeKeysToFlip = useReaderStore((s) => s.getViewSettings(bookKey)?.volumeKeysToFlip);
   // While this book's TTS is actively playing, the volume keys must control the
   // system volume instead of flipping pages (#4691). A paused or stopped session
   // hands them back to the page-flip interception. Safe on iOS because the
@@ -464,7 +465,7 @@ export const usePagination = (
       eventDispatcher.off('native-key-down', handlePageFlip);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bookKey, appService?.isMobileApp]);
 
   // Track this book's TTS playback so volume-key interception can step aside
   // while audio is playing (#4691).
@@ -488,15 +489,20 @@ export const usePagination = (
   useEffect(() => {
     if (!appService?.isMobileApp) return;
 
-    const viewSettings = getViewSettings(bookKey);
-    if (!viewSettings?.volumeKeysToFlip || ttsPlaying) return;
+    if (!volumeKeysToFlip || ttsPlaying) return;
 
     acquireVolumeKeyInterception();
     return () => {
       releaseVolumeKeyInterception();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ttsPlaying]);
+  }, [
+    bookKey,
+    appService?.isMobileApp,
+    volumeKeysToFlip,
+    ttsPlaying,
+    acquireVolumeKeyInterception,
+    releaseVolumeKeyInterception,
+  ]);
 
   // Hardware page turner: native-key + DOM-key listeners and native
   // media-key interception, re-evaluated whenever the setting changes.

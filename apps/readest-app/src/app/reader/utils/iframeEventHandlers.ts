@@ -11,9 +11,28 @@ import {
   type TurnGestureIntent,
 } from './turnGestureArena';
 
-let lastClickTime = 0;
-let longHoldTimeout: ReturnType<typeof setTimeout> | null = null;
-let isMouseDown = false;
+interface ClickState {
+  lastClickTime: number;
+  mouseDownAt?: number;
+  isMouseDown: boolean;
+  mouseLongHeld: boolean;
+  singleClickTimeout?: ReturnType<typeof setTimeout>;
+  touchRelease?: { at: number; x: number; y: number; blocked: boolean };
+}
+const clickStates = new Map<string, ClickState>();
+const getClickState = (bookKey: string) => {
+  let state = clickStates.get(bookKey);
+  if (!state) {
+    state = { lastClickTime: 0, isMouseDown: false, mouseLongHeld: false };
+    clickStates.set(bookKey, state);
+  }
+  return state;
+};
+
+export const clearIframeClickState = (bookKey: string) => {
+  clearTimeout(clickStates.get(bookKey)?.singleClickTimeout);
+  clickStates.delete(bookKey);
+};
 interface NativeTurnHost extends HTMLElement {
   scrollLocked?: boolean;
 }
@@ -22,6 +41,7 @@ interface TouchGesture {
   startY: number;
   startTime: number;
   moved: boolean;
+  multiTouch: boolean;
   turnHost?: NativeTurnHost;
   turnIntent?: TurnGestureIntent;
 }
@@ -310,10 +330,10 @@ export const handleKeyup = (bookKey: string, event: KeyboardEvent) => {
 };
 
 export const handleMousedown = (bookKey: string, event: MouseEvent) => {
-  isMouseDown = true;
-  longHoldTimeout = setTimeout(() => {
-    longHoldTimeout = null;
-  }, LONG_HOLD_THRESHOLD);
+  const state = getClickState(bookKey);
+  state.isMouseDown = true;
+  state.mouseDownAt = Date.now();
+  state.mouseLongHeld = false;
 
   if (event.button === 1 && autoscrollArmedBooks.has(bookKey)) {
     event.preventDefault();
@@ -360,7 +380,10 @@ export const handleMousemove = (bookKey: string, event: MouseEvent) => {
 };
 
 export const handleMouseup = (bookKey: string, event: MouseEvent) => {
-  isMouseDown = false;
+  const state = getClickState(bookKey);
+  state.isMouseDown = false;
+  state.mouseLongHeld =
+    state.mouseDownAt !== undefined && Date.now() - state.mouseDownAt >= LONG_HOLD_THRESHOLD;
   // we will handle mouse back and forward buttons ourselves
   if ([3, 4].includes(event.button)) {
     event.preventDefault();
@@ -433,8 +456,30 @@ export const handleClick = (
   const now = Date.now();
   if (consumeSuppressedDomClick(bookKey, event, now)) return;
 
-  if (!doubleClickDisabled.current && now - lastClickTime < DOUBLE_CLICK_INTERVAL_THRESHOLD_MS) {
-    lastClickTime = now;
+  const state = getClickState(bookKey);
+  const touchRelease = state.touchRelease;
+  // Some WebViews omit compatibility mousedown/up. Use the actual touch
+  // duration, even when compatibility mouse events ARE delivered after it.
+  const fromTouch =
+    touchRelease &&
+    now - touchRelease.at <= SYNTHESIZED_CLICK_SUPPRESSION_MS &&
+    Math.hypot(event.screenX - touchRelease.x, event.screenY - touchRelease.y) <=
+      SYNTHESIZED_CLICK_POSITION_SLOP_PX;
+  const longHeld = state.mouseLongHeld || (fromTouch && touchRelease.blocked);
+  if (longHeld) return;
+
+  // Cancel by identity, rather than elapsed time alone: two compatibility
+  // clicks can share the same clock millisecond and must not emit a single.
+  if (!doubleClickDisabled.current) {
+    clearTimeout(state.singleClickTimeout);
+    state.singleClickTimeout = undefined;
+  }
+
+  if (
+    !doubleClickDisabled.current &&
+    now - state.lastClickTime < DOUBLE_CLICK_INTERVAL_THRESHOLD_MS
+  ) {
+    state.lastClickTime = now;
     window.postMessage(
       {
         type: 'iframe-double-click',
@@ -452,16 +497,17 @@ export const handleClick = (
     return;
   }
 
-  lastClickTime = now;
+  state.lastClickTime = now;
 
   const postSingleClick = () => {
+    if (clickStates.get(bookKey) !== state) return;
     // Native captured-turn recognition is delivered through postMessage and
     // can land one task after the iframe touchend/click. Re-check ownership at
     // dispatch time so an early 1–6px claim cannot slip through that gap.
     const lateLayeredClaim = layeredTurnTouchClaims.get(bookKey);
     if (lateLayeredClaim?.claimed && lateLayeredClaim.ended) {
       clearLayeredTurnTouchClaim(bookKey);
-      if (lastClickTime === now) lastClickTime = 0;
+      if (state.lastClickTime === now) state.lastClickTime = 0;
       return;
     }
     const element = event.target as HTMLElement | null;
@@ -503,12 +549,7 @@ export const handleClick = (
     // if the mouse button is still held, a drag is in progress (e.g. a
     // double-click-and-drag selection); sending a single click here would turn
     // the page mid-selection (#4524).
-    if (isMouseDown) {
-      return;
-    }
-
-    // if long hold is detected, we don't want to send single click event
-    if (!longHoldTimeout) {
+    if (state.isMouseDown || touchGestures.has(bookKey)) {
       return;
     }
 
@@ -547,8 +588,9 @@ export const handleClick = (
     );
   };
   if (!doubleClickDisabled.current) {
-    setTimeout(() => {
-      if (Date.now() - lastClickTime >= DOUBLE_CLICK_INTERVAL_THRESHOLD_MS) {
+    state.singleClickTimeout = setTimeout(() => {
+      state.singleClickTimeout = undefined;
+      if (Date.now() - state.lastClickTime >= DOUBLE_CLICK_INTERVAL_THRESHOLD_MS) {
         postSingleClick();
       }
     }, DOUBLE_CLICK_INTERVAL_THRESHOLD_MS);
@@ -583,6 +625,10 @@ const handleTouchEv = (bookKey: string, event: TouchEvent, type: string) => {
   const changedTouches = serializeTouches(event.changedTouches);
   if (type === 'iframe-touchstart') {
     beginLayeredTurnTouch(bookKey);
+    const clickState = getClickState(bookKey);
+    clickState.touchRelease = undefined;
+    clickState.mouseLongHeld = false;
+    clickState.isMouseDown = false;
     const touch = targetTouches[0];
     if (touch) {
       const nativeTurn = event.touches.length === 1 ? createNativeTurnIntent(event, touch) : null;
@@ -591,6 +637,7 @@ const handleTouchEv = (bookKey: string, event: TouchEvent, type: string) => {
         startY: touch.screenY,
         startTime: event.timeStamp,
         moved: false,
+        multiTouch: event.touches.length !== 1,
         turnHost: nativeTurn?.host,
         turnIntent: nativeTurn?.intent,
       });
@@ -599,6 +646,7 @@ const handleTouchEv = (bookKey: string, event: TouchEvent, type: string) => {
     const gesture = touchGestures.get(bookKey);
     const touch = targetTouches[0];
     if (gesture && touch) {
+      if (event.touches.length !== 1) gesture.multiTouch = true;
       const distance = Math.hypot(touch.screenX - gesture.startX, touch.screenY - gesture.startY);
       if (distance >= SYNTHESIZED_CLICK_SWIPE_DISTANCE_PX) gesture.moved = true;
       const { turnHost, turnIntent } = gesture;
@@ -641,6 +689,17 @@ const handleTouchEv = (bookKey: string, event: TouchEvent, type: string) => {
     // touchmove event. Include the released finger when deciding whether the
     // browser-generated click belongs to a swipe.
     const releasedTouch = changedTouches[0];
+    if (gesture) {
+      getClickState(bookKey).touchRelease = {
+        at: Date.now(),
+        x: releasedTouch?.screenX ?? gesture.startX,
+        y: releasedTouch?.screenY ?? gesture.startY,
+        blocked:
+          type === 'iframe-touchcancel' ||
+          gesture.multiTouch ||
+          event.timeStamp - gesture.startTime >= LONG_HOLD_THRESHOLD,
+      };
+    }
     const layeredClaim = layeredTurnTouchClaims.get(bookKey);
     if (type === 'iframe-touchend' && layeredClaim?.claimed) event.preventDefault();
     const moved =

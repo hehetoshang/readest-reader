@@ -69,6 +69,7 @@ import {
   handleTouchMove,
   handleTouchEnd,
   handleTouchCancel,
+  clearIframeClickState,
 } from '../utils/iframeEventHandlers';
 import { getMaxInlineSize } from '@/utils/config';
 import { getDirFromUILanguage } from '@/utils/rtl';
@@ -152,6 +153,8 @@ const FoliateViewer: React.FC<{
   const autoScroll = useAutoScroll(bookKey, viewRef);
   const { registerSpeedListeners, overlayVisible: speedOverlayVisible } =
     useAutoScrollSpeedGesture(autoScroll);
+
+  useEffect(() => () => clearIframeClickState(bookKey), [bookKey]);
 
   // A pending anti-flash timer must not fire setNavigating on an unmounted component.
   useEffect(() => {
