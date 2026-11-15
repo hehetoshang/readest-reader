@@ -54,7 +54,11 @@ export interface Renderer extends HTMLElement {
     listener: EventListener,
     option?: AddEventListenerOptions,
   ) => void;
-  removeEventListener: (type: string, listener: EventListener) => void;
+  removeEventListener: (
+    type: string,
+    listener: EventListener,
+    option?: EventListenerOptions,
+  ) => void;
   showLoupe?: (
     x: number,
     y: number,
@@ -133,6 +137,38 @@ export interface FoliateView extends HTMLElement {
 }
 
 export const wrappedFoliateView = (originalView: FoliateView): FoliateView => {
+  let initialization: Promise<void> | undefined;
+  const initialize = originalView.init.bind(originalView);
+  originalView.init = (options) => {
+    const pending = Promise.resolve(initialize(options));
+    initialization = pending;
+    return pending.finally(() => {
+      if (initialization === pending) initialization = undefined;
+    });
+  };
+  // Notify pending cold restoration before a turn's animation starts. Waiting
+  // for relocate would let a font completion reapply the old location mid-turn.
+  for (const method of ['next', 'prev'] as const) {
+    const navigate = originalView[method].bind(originalView);
+    originalView[method] = (distance?: number) => {
+      originalView.dispatchEvent(new Event('reading-action'));
+      return initialization ? initialization.then(() => navigate(distance)) : navigate(distance);
+    };
+  }
+  const goToFraction = originalView.goToFraction.bind(originalView);
+  originalView.goToFraction = (fraction) => {
+    originalView.dispatchEvent(new Event('reading-action'));
+    return initialization
+      ? initialization.then(() => goToFraction(fraction))
+      : goToFraction(fraction);
+  };
+  for (const method of ['back', 'forward'] as const) {
+    const navigate = originalView.history[method].bind(originalView.history);
+    originalView.history[method] = () => {
+      originalView.dispatchEvent(new Event('reading-action'));
+      return navigate();
+    };
+  }
   const originalAddAnnotation = originalView.addAnnotation.bind(originalView);
   originalView.addAnnotation = (note: BookNote, remove = false) => {
     // transform BookNote to foliate annotation
@@ -151,8 +187,19 @@ export const wrappedFoliateView = (originalView: FoliateView): FoliateView => {
   originalView.goTo = (target: string | number): Promise<void> => {
     // Cross-section jumps can take seconds (the target section's images block
     // its iframe load); surface start/end so the viewer can show a spinner.
-    originalView.dispatchEvent(new CustomEvent('navigate-start'));
-    return Promise.resolve(originalGoTo(target)).finally(() => {
+    const accepted = originalView.dispatchEvent(
+      new CustomEvent('navigate-start', { detail: { target }, cancelable: true }),
+    );
+    // Recreating the same iframe before its load resolves strands init. A
+    // repeated host restore is canceled by the pending initial-location owner;
+    // a new jump waits for that first document before taking over.
+    const navigate = () => originalGoTo(target);
+    const pending = !accepted
+      ? undefined
+      : initialization
+        ? initialization.then(navigate)
+        : navigate();
+    return Promise.resolve(pending).finally(() => {
       originalView.dispatchEvent(new CustomEvent('navigate-end'));
     });
   };

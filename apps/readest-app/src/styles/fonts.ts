@@ -114,7 +114,11 @@ const getAdditionalCJKFontFaces = () => `
 }
 `;
 
-export const mountAdditionalFonts = async (document: Document, isCJK = false) => {
+export const mountAdditionalFonts = async (
+  document: Document,
+  isCJK = false,
+  signal?: AbortSignal,
+) => {
   const mountCJKFonts = isCJK || isCJKEnv();
 
   // Mount font stylesheets and @font-face rules
@@ -135,6 +139,7 @@ export const mountAdditionalFonts = async (document: Document, isCJK = false) =>
   const parser = new DOMParser();
   const linksDocument = parser.parseFromString(links, 'text/html');
 
+  const loads: Promise<void>[] = [];
   Array.from(linksDocument.head.children).forEach((child) => {
     if (child.tagName === 'LINK') {
       const link = document.createElement('link');
@@ -142,9 +147,25 @@ export const mountAdditionalFonts = async (document: Document, isCJK = false) =>
       link.href = child.getAttribute('href') || '';
       link.crossOrigin = child.getAttribute('crossorigin') || '';
 
+      loads.push(
+        new Promise<void>((resolve) => {
+          const settled = () => {
+            link.removeEventListener('load', settled);
+            link.removeEventListener('error', settled);
+            signal?.removeEventListener('abort', settled);
+            resolve();
+          };
+          link.addEventListener('load', settled, { once: true });
+          link.addEventListener('error', settled, { once: true });
+          signal?.addEventListener('abort', settled, { once: true });
+          if (signal?.aborted) settled();
+        }),
+      );
+
       document.head.appendChild(link);
     }
   });
+  await Promise.all(loads);
 };
 
 export type FontStyle = 'normal' | 'italic' | 'oblique';
