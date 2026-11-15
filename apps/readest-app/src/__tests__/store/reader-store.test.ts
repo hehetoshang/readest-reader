@@ -91,6 +91,8 @@ import { DocumentLoader, type BookDoc } from '@/libs/document';
 import { computeBookNav, hydrateBookNav, isBookNavCacheCurrent } from '@/services/nav';
 import { uniqueId } from '@/utils/misc';
 import { releaseUnusedBookData } from '@/services/bookResourceLifetime';
+import { createBookRendererLifetime } from '@/services/bookRendererLifetime';
+import { BookDocumentOwner } from '@/services/bookDocumentOwner';
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -133,14 +135,20 @@ function lifecycleFixture(id: string) {
 }
 
 describe('SOL-001 reload generation ownership', () => {
-  test('releases every replaced generation exactly once after repeated reloads', async () => {
+  test('completed production reloads release old generations while the current view stays open', async () => {
     const f = lifecycleFixture('generations');
     await f.init();
-    for (let i = 0; i < 3; i++) await f.init('generations-0', true);
-    for (const doc of f.documents) expect(doc.destroy).not.toHaveBeenCalled();
+    for (let i = 0; i < 6; i++) {
+      useReaderStore.getState().recreateViewer({ getAppService: async () => f.service } as never, 'generations-0');
+      await vi.waitFor(() => expect(f.documents).toHaveLength(i + 2));
+      await vi.waitFor(() => expect(useReaderStore.getState().getViewState('generations-0')?.loading).toBe(false));
+      await releaseUnusedBookData('generations');
+      expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([...Array(i + 1).fill(1), 0]);
+      expect(f.files.map(file => file.close.mock.calls.length)).toEqual([...Array(i + 1).fill(1), 0]);
+    }
     await Promise.all([f.close(), releaseUnusedBookData('generations')]);
-    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([1, 1, 1, 1]);
-    expect(f.files.map(file => file.close.mock.calls.length)).toEqual([1, 1, 1, 1]);
+    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual(Array(7).fill(1));
+    expect(f.files.map(file => file.close.mock.calls.length)).toEqual(Array(7).fill(1));
     await releaseUnusedBookData('generations');
     for (const doc of f.documents) expect(doc.destroy).toHaveBeenCalledOnce();
   });
@@ -149,6 +157,7 @@ describe('SOL-001 reload generation ownership', () => {
     const f = lifecycleFixture('holders');
     await f.init();
     await f.init('holders-second');
+    const speech = new BookDocumentOwner('holders', f.documents[0] as unknown as BookDoc);
     await f.init('holders-0', true);
     tts.held = true;
     await f.close();
@@ -156,6 +165,7 @@ describe('SOL-001 reload generation ownership', () => {
     await f.close('holders-second');
     for (const doc of f.documents) expect(doc.destroy).not.toHaveBeenCalled();
     tts.held = false;
+    await speech.close(async () => {});
     await releaseUnusedBookData('holders');
     expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([1, 1]);
     expect(f.files.map(file => file.close.mock.calls.length)).toEqual([1, 1]);
@@ -176,10 +186,13 @@ describe('SOL-001 reload generation ownership', () => {
   test('a failed old destroy still waits for all generations and allows a fresh concurrent open', async () => {
     const f = lifecycleFixture('destroyfailure');
     await f.init();
+    const renderer = createBookRendererLifetime('destroyfailure', f.documents[0] as unknown as BookDoc);
     await f.init('destroyfailure-0', true);
     const cleanup = deferred();
     f.documents[0]!.destroy.mockRejectedValueOnce(new Error('worker failed'));
     f.documents[1]!.destroy.mockReturnValueOnce(cleanup.promise);
+    const oldCleanup = renderer.close(async () => {});
+    const oldRejected = expect(oldCleanup).rejects.toThrow('release book');
     let closed = false;
     const closing = f.close().finally(() => { closed = true; });
     const rejected = expect(closing).rejects.toThrow('release book');
@@ -189,10 +202,108 @@ describe('SOL-001 reload generation ownership', () => {
     expect(f.open).toHaveBeenCalledTimes(3);
     expect(f.documents[2]!.destroy).not.toHaveBeenCalled();
     cleanup.resolve();
-    await rejected;
+    await Promise.all([rejected, oldRejected]);
     expect(f.files.slice(0, 2).map(file => file.close.mock.calls.length)).toEqual([1, 1]);
     await f.close('destroyfailure-new');
     expect(f.documents[2]!.destroy).toHaveBeenCalledOnce();
+  });
+
+  test('an older parallel view holds only its own generation while newer reloads are collected', async () => {
+    const f = lifecycleFixture('parallelgenerations');
+    await f.init();
+    await f.init('parallelgenerations-other');
+    await f.init('parallelgenerations-0', true);
+    await f.init('parallelgenerations-0', true);
+    await releaseUnusedBookData('parallelgenerations');
+    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([0, 1, 0]);
+    await f.close('parallelgenerations-other');
+    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([1, 1, 0]);
+    await f.close();
+  });
+
+  test.each(['resolve', 'reject'] as const)('old renderer %s waits for late setup and teardown without retaining later generations', async outcome => {
+    const id = `renderer${outcome}`;
+    const f = lifecycleFixture(id);
+    await f.init();
+    const renderer = createBookRendererLifetime(id, f.documents[0] as unknown as BookDoc);
+    const setup = deferred();
+    const teardown = deferred();
+    const opened = renderer.open(() => setup.promise);
+    const openResult = outcome === 'reject' ? expect(opened).rejects.toThrow('render failed') : opened;
+    await Promise.resolve();
+    await f.init(`${id}-0`, true);
+    let closed = false;
+    const destroyRenderer = vi.fn(() => teardown.promise);
+    const closing = renderer.close(destroyRenderer).then(() => { closed = true; });
+    const closingAgain = renderer.close(destroyRenderer);
+    const sweep = releaseUnusedBookData(id);
+    await Promise.resolve();
+    expect(f.documents[0]!.destroy).not.toHaveBeenCalled();
+    expect(renderer.isActive()).toBe(false);
+    if (outcome === 'resolve') setup.resolve(); else setup.reject(new Error('render failed'));
+    await openResult;
+    await vi.waitFor(() => expect(destroyRenderer).toHaveBeenCalledOnce());
+    expect(closed).toBe(false);
+    expect(f.documents[0]!.destroy).not.toHaveBeenCalled();
+    teardown.resolve();
+    await Promise.all([closing, closingAgain, sweep]);
+    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([1, 0]);
+    expect(f.files.map(file => file.close.mock.calls.length)).toEqual([1, 0]);
+    await f.close();
+  });
+
+  test('TTS moves to a fresh generation but an old in-flight read and shutdown retain their own resources', async () => {
+    const f = lifecycleFixture('speechgenerations');
+    await f.init();
+    const speech = new BookDocumentOwner('speechgenerations', f.documents[0] as unknown as BookDoc);
+    const read = deferred();
+    const reading = speech.run(f.documents[0] as unknown as BookDoc, () => read.promise);
+    await f.init('speechgenerations-0', true);
+    speech.move(f.documents[1] as unknown as BookDoc);
+    await releaseUnusedBookData('speechgenerations');
+    expect(f.documents[0]!.destroy).not.toHaveBeenCalled();
+    read.resolve();
+    await reading;
+    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([1, 0]);
+    await f.init('speechgenerations-0', true);
+    const teardown = deferred();
+    const shutdown = vi.fn(() => teardown.promise);
+    const stopping = speech.close(shutdown);
+    const again = speech.close(shutdown);
+    const sweep = releaseUnusedBookData('speechgenerations');
+    await Promise.resolve();
+    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([1, 0, 0]);
+    await expect(speech.run(f.documents[1] as unknown as BookDoc, async () => {})).rejects.toThrow('closed');
+    teardown.resolve();
+    await Promise.all([stopping, again, sweep]);
+    expect(shutdown).toHaveBeenCalledOnce();
+    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([1, 1, 0]);
+    await f.close();
+  });
+
+  test('a delayed old renderer cannot publish into a reopened view before React cleanup runs', async () => {
+    const f = lifecycleFixture('latemount');
+    await f.init();
+    const previousKey = useReaderStore.getState().getViewState('latemount-0')!.viewerKey;
+    const renderer = createBookRendererLifetime('latemount', f.documents[0] as unknown as BookDoc,
+      () => useReaderStore.getState().getViewState('latemount-0')?.viewerKey === previousKey);
+    const setup = deferred();
+    const publish = vi.fn();
+    const opening = renderer.open(async () => {
+      await setup.promise;
+      if (renderer.isActive()) publish();
+    });
+    await Promise.resolve();
+    // uniqueId is normally unique; use distinct keys for this race too.
+    vi.mocked(uniqueId).mockReturnValueOnce('new-mount');
+    await f.init('latemount-0', true);
+    expect(f.documents[0]!.destroy).not.toHaveBeenCalled();
+    setup.resolve();
+    await opening;
+    expect(publish).not.toHaveBeenCalled();
+    await renderer.close(async () => {});
+    expect(f.documents.map(doc => doc.destroy.mock.calls.length)).toEqual([1, 0]);
+    await f.close();
   });
 
   test('a post-parse reload failure destroys the unpublished document, retaining the published one', async () => {

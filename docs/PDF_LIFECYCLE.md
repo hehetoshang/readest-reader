@@ -19,8 +19,24 @@ proof of native I/O completion.
 `bookDataStore` was an unbounded strong owner of documents and files after
 `clearViewState`; Foliate view close only destroys its renderer. The TTS session
 manager intentionally retains `view.book` for background speech. The new release
-path therefore checks all view keys (including loading views), active TTS, and
-TTS teardowns before detaching book data and awaiting document/file cleanup.
+path checks all view keys (including loading views), active TTS, and TTS
+teardowns before detaching the current book data. Replaced documents have
+**generation-specific** ownership: each view slot retains its published document,
+each mounted Foliate renderer independently retains the document it opened, and
+TTS retains its current document plus every in-flight section/open operation.
+Replacing a slot does not release a still-mounted old renderer or another pane.
+Once the last actual holder exits, the retired document/file is released even
+while a newer generation of the same book remains open. Cleanup is memoized by
+document identity, not by mutable BookData/config object identity.
+
+Renderer unmount and direct close join one fence, await late async setup before
+closing/removing the renderer, detach transform listeners, then release their
+lease. TTS reattachment transfers its current lease while outstanding old reads
+keep their own leases; shutdown joins existing operations before closing clients
+and releasing the last lease. Release waits for teardowns already begun at the
+call, while internal lease release never joins its own enclosing teardown fence.
+Cancelled initialization retains its separate completed fence through parsing and
+unpublished document/file cleanup; later opens do not extend an earlier close.
 There is no idle document cache after the final holder leaves. Concurrent closes
 join pending cleanup; a reopen gets fresh resources. Opening cancellation prevents
 a late document from recreating a closed view, and pre-publication failures

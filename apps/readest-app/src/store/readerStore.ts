@@ -1,5 +1,10 @@
 import { isMokeRemoteSourceUrl } from '@/services/mokeRemoteSource';
-import { retireBookData, trackCancelledBookInitialization } from '@/services/bookResourceLifetime';
+import {
+  retireBookData,
+  trackCancelledBookInitialization,
+  setViewBookDocument,
+  releaseUnusedBookData,
+} from '@/services/bookResourceLifetime';
 import { create } from 'zustand';
 
 import {
@@ -172,6 +177,7 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       pending.controller.abort();
     }
     pendingOpens.delete(key);
+    setViewBookDocument(key, null);
     // An open that closes before its first relocate has no reason to persist
     // a warm-open cache afterward.
     pendingNavCacheWrites.delete(key.split('-')[0]!);
@@ -396,6 +402,8 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
           [id]: newBookData,
         },
       }));
+      setViewBookDocument(key, bookDoc);
+      void releaseUnusedBookData(id).catch(error => console.warn('Failed to release retired book:', error));
       ownedDocument = null;
       openedFile = null;
       const configViewSettings = config.viewSettings!;

@@ -902,6 +902,7 @@ export const useTTSControl = ({ bookKey, onRequestHidePanel }: UseTTSControlProp
           false,
           preprocessSSMLForTTS,
           handleSectionChange,
+          bookKey.split('-')[0]!,
         );
         // The constructor takes the view directly (attachView, which also binds
         // this, only runs on the background-session reattach path), so set the

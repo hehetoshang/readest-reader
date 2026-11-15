@@ -76,7 +76,7 @@ export interface Renderer extends HTMLElement {
 
 export interface FoliateView extends HTMLElement {
   open: (book: BookDoc) => Promise<void>;
-  close: () => void;
+  close: () => void | Promise<void>;
   init: (options: { lastLocation: string }) => void;
   goTo: (target: string | number) => void;
   goToFraction: (fraction: number) => void;

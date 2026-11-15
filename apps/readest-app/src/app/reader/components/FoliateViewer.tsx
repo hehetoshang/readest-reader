@@ -102,6 +102,7 @@ import KOSyncConflictResolver from './KOSyncResolver';
 import ImageViewer from './ImageViewer';
 import TableViewer from './TableViewer';
 import { getTTSMiniPlayerClearance } from '../utils/ttsMiniPlayerPosition';
+import { createBookRendererLifetime } from '@/services/bookRendererLifetime';
 
 const FoliateViewer: React.FC<{
   bookKey: string;
@@ -139,7 +140,6 @@ const FoliateViewer: React.FC<{
 
   const viewRef = useRef<FoliateView | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const isViewCreated = useRef(false);
   const doubleClickDisabled = useRef(!!viewSettings?.disableDoubleClick);
   const [toastMessage, setToastMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -671,15 +671,35 @@ const FoliateViewer: React.FC<{
   });
 
   useEffect(() => {
-    if (isViewCreated.current) return;
-    isViewCreated.current = true;
-
-    setTimeout(() => setLoading(true), 200);
+    const viewerKey = getViewState(bookKey)?.viewerKey;
+    const lifetime = createBookRendererLifetime(bookKey.split('-')[0]!, bookDoc, () => {
+      const state = getViewState(bookKey);
+      return !!viewerKey && state?.viewerKey === viewerKey && !state.loading;
+    });
+    const loadingTimer = setTimeout(() => setLoading(true), 200);
+    let renderedView: FoliateView | null = null;
+    let closeRenderer: (() => void | Promise<void>) | undefined;
+    const listeners: Array<() => void> = [];
+    const close = () => {
+      clearTimeout(loadingTimer);
+      return lifetime.close(async () => {
+        try { await closeRenderer?.(); }
+        finally {
+          for (const remove of listeners) remove();
+          renderedView?.remove();
+          if (viewRef.current === renderedView) viewRef.current = null;
+        }
+      });
+    };
 
     const openBook = async () => {
       console.log('Opening book', bookKey);
       await import('foliate-js/view.js');
+      if (!lifetime.isActive()) return;
       const view = wrappedFoliateView(document.createElement('foliate-view') as FoliateView);
+      renderedView = view;
+      closeRenderer = view.close.bind(view);
+      view.close = close;
       view.id = `foliate-view-${bookKey}`;
       containerRef.current?.appendChild(view);
 
@@ -702,13 +722,14 @@ const FoliateViewer: React.FC<{
       }
 
       await view.open(bookDoc);
+      if (!lifetime.isActive()) return;
       // make sure we can listen renderer events after opening book
       viewRef.current = view;
       setFoliateView(bookKey, view);
 
       const { book } = view;
 
-      book.transformTarget?.addEventListener('load', async (event: Event) => {
+      const onResourceLoad = async (event: Event) => {
         const { detail } = event as CustomEvent<{
           isScript: boolean;
           type: string;
@@ -732,12 +753,16 @@ const FoliateViewer: React.FC<{
             }
           });
         }
-      });
+      };
+      book.transformTarget?.addEventListener('load', onResourceLoad);
+      listeners.push(() => book.transformTarget?.removeEventListener('load', onResourceLoad));
       const viewWidth = appService?.isMobile ? screen.width : window.innerWidth;
       const viewHeight = appService?.isMobile ? screen.height : window.innerHeight;
       const width = viewWidth - insets.left - insets.right;
       const height = viewHeight - insets.top - insets.bottom;
-      book.transformTarget?.addEventListener('data', getDocTransformHandler({ width, height }));
+      const onResourceData = getDocTransformHandler({ width, height });
+      book.transformTarget?.addEventListener('data', onResourceData);
+      listeners.push(() => book.transformTarget?.removeEventListener('data', onResourceData));
       view.renderer.setStyles?.(getStyles(viewSettings, undefined, getLoadedFonts()));
       applyTranslationStyle(viewSettings);
 
@@ -750,6 +775,7 @@ const FoliateViewer: React.FC<{
       const screenOrientation = viewSettings.screenOrientation!;
       if (appService?.isMobileApp) {
         await lockScreenOrientation({ orientation: screenOrientation });
+        if (!lifetime.isActive()) return;
       }
       if (animated) {
         view.renderer.setAttribute('animated', '');
@@ -813,6 +839,7 @@ const FoliateViewer: React.FC<{
       } else {
         await view.goToFraction(0);
       }
+      if (!lifetime.isActive()) return;
       // The reader is showing a deep-link target, not the user's actual reading
       // position. Mark the view as a preview so progress writers (auto-save,
       // cloud sync, kosync) skip until the user takes a reading action. The
@@ -831,7 +858,13 @@ const FoliateViewer: React.FC<{
       }
     };
 
-    openBook();
+    void lifetime.open(openBook).catch(error => {
+      console.warn('Failed to open book renderer:', error);
+      void close().catch(cleanupError => console.warn('Failed to close book renderer:', cleanupError));
+    });
+    return () => {
+      void close().catch(error => console.warn('Failed to close book renderer:', error));
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
