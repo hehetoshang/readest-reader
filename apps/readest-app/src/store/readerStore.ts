@@ -1,4 +1,5 @@
 import { isMokeRemoteSourceUrl } from '@/services/mokeRemoteSource';
+import { retireBookData, trackCancelledBookInitialization } from '@/services/bookResourceLifetime';
 import { create } from 'zustand';
 
 import {
@@ -40,7 +41,7 @@ import {
 } from '@/services/mokeBridge';
 
 const pendingNavCacheWrites = new Map<string, () => Promise<void>>();
-const pendingOpens = new Map<string, AbortController>();
+const pendingOpens = new Map<string, { controller: AbortController; completed: Promise<void> }>();
 const pendingBookInitializations = new Map<string, Promise<void>>();
 
 const scheduleNavCacheWrite = (bookHash: string, write: () => Promise<void>) => {
@@ -165,7 +166,11 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
   },
 
   clearViewState: (key: string) => {
-    pendingOpens.get(key)?.abort();
+    const pending = pendingOpens.get(key);
+    if (pending) {
+      trackCancelledBookInitialization(key.split('-')[0]!, pending.completed);
+      pending.controller.abort();
+    }
     pendingOpens.delete(key);
     // An open that closes before its first relocate has no reason to persist
     // a warm-open cache afterward.
@@ -206,9 +211,13 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       ? previousInitialization.then(() => completed)
       : completed;
     pendingBookInitializations.set(id, initialization);
-    pendingOpens.get(key)?.abort();
+    const previousOpen = pendingOpens.get(key);
+    if (previousOpen) {
+      trackCancelledBookInitialization(id, previousOpen.completed);
+      previousOpen.controller.abort();
+    }
     const opening = new AbortController();
-    pendingOpens.set(key, opening);
+    pendingOpens.set(key, { controller: opening, completed });
     set((state) => ({
       viewStates: {
         ...state.viewStates,
@@ -271,12 +280,14 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
           const data = parsePseStreamFileName(book.url!);
           const doc = await openPseStreamBook(data);
           bookDoc = doc.book;
+          ownedDocument = bookDoc;
           file = null;
         } else if (isFeed) {
           const { feedUrl } = parseFeedBookUrl(book.url!);
           // AppService publicly exposes the readFile/writeFile/exists surface of FileSystem.
           const fs = appService as unknown as FileSystem;
           bookDoc = await openFeedBookDoc(fs, book.hash, feedUrl, book.title);
+          ownedDocument = bookDoc;
           file = null;
         } else {
           const content = (await appService.loadBookContent(book)) as BookContent;
@@ -376,6 +387,9 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         bookDoc.rendition?.layout === 'pre-paginated' || FIXED_LAYOUT_FORMATS.has(book.format);
       const newBookData: BookData = { id, book, file, config, bookDoc, isFixedLayout };
       if (opening.signal.aborted) throw new Error('Book opening cancelled');
+      if (bookData && (bookData.bookDoc !== bookDoc || bookData.file !== file)) {
+        retireBookData(id, bookData);
+      }
       useBookDataStore.setState((state) => ({
         booksData: {
           ...state.booksData,
@@ -383,6 +397,7 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         },
       }));
       ownedDocument = null;
+      openedFile = null;
       const configViewSettings = config.viewSettings!;
       const globalViewSettings = settings.globalViewSettings;
       set((state) => ({
@@ -449,7 +464,7 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     } finally {
       finishInitialization();
       if (pendingBookInitializations.get(id) === initialization) pendingBookInitializations.delete(id);
-      if (pendingOpens.get(key) === opening) pendingOpens.delete(key);
+      if (pendingOpens.get(key)?.controller === opening) pendingOpens.delete(key);
     }
   },
   getViewSettings: (key: string) => get().viewStates[key]?.viewSettings || null,
