@@ -63,7 +63,8 @@ export const useDeviceControlStore = create<DeviceControlState>((set, get) => ({
 
   releaseVolumeKeyInterception: () => {
     const { volumeKeysInterceptionCount } = get();
-    if (volumeKeysInterceptionCount <= 1) {
+    if (volumeKeysInterceptionCount === 0) return;
+    if (volumeKeysInterceptionCount === 1) {
       interceptKeys({ volumeKeys: false });
       set({ volumeKeysIntercepted: false, volumeKeysInterceptionCount: 0 });
     } else {

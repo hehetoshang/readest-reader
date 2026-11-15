@@ -17,6 +17,8 @@
     "test": "pnpm test:contract && pnpm --filter @readest/readest-app test",
     "test:contract": "node --test tests/*.test.mjs",
     "test:reader-browser": "node --test tests/browser/page-turn-fade.mjs",
+    "test:page-turn-input": "node --test tests/browser/page-turn-input.mjs",
+    "test:initial-location": "node --test tests/browser/initial-location.mjs",
     "typecheck": "pnpm --filter @readest/readest-app typecheck",
     "check:rust": "cargo check -p Readest --no-default-features",
     "lint": "pnpm --filter @readest/readest-app lint",
