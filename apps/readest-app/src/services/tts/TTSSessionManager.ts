@@ -199,8 +199,9 @@ export class TTSSessionManager extends EventTarget {
     // No use_background_audio(false) here: bridge.unbind() deactivates the
     // native media session, which releases the iOS audio session itself.
     await teardown;
-    const { releaseUnusedBookData } = await import('@/services/bookResourceLifetime');
-    await releaseUnusedBookData(session.bookHash);
+    await import('@/services/bookResourceLifetime')
+      .then(({ releaseUnusedBookData }) => releaseUnusedBookData(session.bookHash))
+      .catch(error => console.warn('Failed to release stopped TTS book:', error));
   }
 
   // Stop this book if it owns the live slot, or join its teardown if another
