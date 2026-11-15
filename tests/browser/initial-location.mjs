@@ -10,32 +10,34 @@ const fixture = `<!doctype html><style>
 html,body{margin:0;width:100%;height:100%}foliate-view{display:block;width:100%;height:100%}
 </style><foliate-view></foliate-view><script type="module">
 import '/view.js';
-import { preserveInitialLocation } from '/initialLocation.js';
+import { preserveInitialLocation, preserveReadingContext } from '/initialLocation.js';
 import { wrappedFoliateView } from '/wrapped-view.js';
 const locationOrigin=window.location.href;
 const baseStyle='html{font:16px serif}p{line-height:1.4;margin:.6em 0}';
 const chapter='<html><head><title>Original chapter</title></head><body><h1>Chapter</h1>'+Array.from({length:100},(_,i)=>'<p id="p'+i+'">Chapter 0, paragraph '+i+'. Independent original QA text records the current page. Reading should stay clear when moving forwards and backwards, with no opacity fade after closing animation.</p>').join('')+'</body></html>';
-window.openReader=async(location,fixed=true,earlyTarget)=>{
+window.openReader=async(location,fixed=true,earlyTarget,follow=false)=>{
   window.restore?.cancel();
   window.view?.close();
   document.querySelector('foliate-view')?.remove();
   const view=wrappedFoliateView(document.createElement('foliate-view'));document.body.append(view);window.view=view;
   const urls=[0,1,2].map(()=>URL.createObjectURL(new Blob([chapter],{type:'text/html'})));
-  await view.open({metadata:{language:'en'},dir:'ltr',sections:urls.map((url,index)=>({id:String(index),load:async()=>url,unload(){URL.revokeObjectURL(url)}}))});
+  await view.open({metadata:{language:'en'},dir:'ltr',sections:urls.map((url,index)=>({id:String(index),load:async()=>{if(window.sectionDelays?.[index])await new Promise(r=>setTimeout(r,window.sectionDelays[index]));return url},unload(){URL.revokeObjectURL(url)}}))});
   const r=view.renderer;r.setAttribute('max-column-count','1');r.setAttribute('no-preload','');
   r.setStyles(baseStyle);
   const sheets=new WeakMap();
-  view.addEventListener('load',({detail:{doc}})=>{
-    const link=doc.createElement('link');link.rel='stylesheet';link.href=new URL('/fonts.css?'+Math.random(),locationOrigin).href;
+  view.addEventListener('load',({detail:{doc,index}})=>{
+    const link=doc.createElement('link');link.rel='stylesheet';link.href=new URL('/fonts.css?section='+index+'&v='+Math.random(),locationOrigin).href;
     const ready=new Promise(resolve=>{link.onload=resolve;link.onerror=resolve});
     sheets.set(doc,ready);window.stylesReady=ready;
     doc.head.append(link);
-  },{once:true});
+  });
+  if(follow)window.context=preserveReadingContext(view,sheets,()=>!!window.restore&&!window.restore.signal.aborted);
   if(location&&fixed)window.restore=preserveInitialLocation(view,location,sheets);
   else window.restore=null;
   if(location){
     const initialized=view.init({lastLocation:location});
-    if(earlyTarget!==undefined)await view.goTo(earlyTarget);
+    if(Array.isArray(earlyTarget))await Promise.all(earlyTarget.map(target=>view.goTo(target)));
+    else if(earlyTarget!==undefined)await view.goTo(earlyTarget);
     else if(fixed)await view.goTo(location); // Moke can repeat restore before iframe load.
     await initialized;
   }else await r.goTo({index:0,anchor:0});
@@ -81,6 +83,12 @@ test('initial location survives late font styles and yields to subsequent naviga
   const font = await readFile(new URL('../../apps/readest-app/public/fonts/InterVariable.woff2', import.meta.url));
   const pending = [];
   const fontRequests = [];
+  const heldSections = new Set();
+  const sectionRequests = [];
+  const releaseSection = index => {
+    heldSections.delete(index);
+    for(const item of sectionRequests.filter(x=>x.index===index))item.resolve();
+  };
   let delayed = false;
   let fontDelayed = false;
   let fontVersion = 0;
@@ -90,6 +98,8 @@ test('initial location survives late font styles and yields to subsequent naviga
     const pathname = new URL(req.url, 'http://localhost').pathname;
     if (pathname === '/fonts.css') {
       if (delayed) await new Promise(resolve => pending.push(resolve));
+      const index=Number(new URL(req.url,'http://localhost').searchParams.get('section'));
+      if(heldSections.has(index))await new Promise(resolve=>sectionRequests.push({index,resolve}));
       res.writeHead(200, { 'content-type': 'text/css' }).end('@font-face{font-family:Probe;src:url(/font.woff2?v='+(++fontVersion)+');font-display:swap}html{font-family:Probe,Arial}');
     } else if (pathname === '/font.woff2') {
       if(fontDelayed)await new Promise(resolve=>fontRequests.push(resolve));
@@ -186,8 +196,52 @@ test('initial location survives late font styles and yields to subsequent naviga
           await page.evaluate(location => openReader(location,true,1),locations[3]);
           await settle(page);
           assert.equal(await page.evaluate(()=>view.renderer.primaryIndex),1,'jump during initial iframe load takes ownership without stranding init');
+
+          // SOL-005: overlapping document loads, repeated targets and a third
+          // intent all finish in request order, even while init is incomplete.
+          await page.evaluate(location => {
+            window.sectionDelays={1:150};
+            return openReader(location,true,[1,2,2,0,2]);
+          },locations[3]);
+          await settle(page);
+          assert.equal(await page.evaluate(()=>view.renderer.primaryIndex),2,'latest concurrent jump owns final document');
+          await page.evaluate(()=>window.sectionDelays={});
+
+          // SOL-006: font completion protects the latest actual page, including
+          // an additional turn while the new chapter's font CSS is still held.
+          delayed=true;
+          await page.evaluate(location=>openReader(location,true,undefined,true),locations[3]);
+          await page.evaluate(async()=>{await view.goTo(2);await view.next()});
+          const newLocation=await page.evaluate(()=>view.lastLocation.cfi);
+          delayed=false;release();await settle(page);
+          await page.waitForFunction(cfi=>glyph(cfi),newLocation);
+          assert.equal(await page.evaluate(cfi=>glyph(cfi),newLocation),true,'new chapter and turn glyph survives late CSS');
+          await page.evaluate(()=>view.next());
+          assert.notEqual(await page.evaluate(()=>view.lastLocation.cfi),newLocation,'subsequent turns continue');
+
+          heldSections.add(0);heldSections.add(2);
+          await page.evaluate(location=>openReader(location,true,undefined,true),locations[3]);
+          await page.evaluate(async()=>{await view.goTo(2);await view.next()});
+          const interleaved=await page.evaluate(()=>view.lastLocation.cfi);
+          releaseSection(2);
+          await page.waitForFunction(()=>[...view.renderer.getContents().find(c=>c.index===2).doc.fonts].some(f=>f.status==='loaded'));
+          releaseSection(0);await settle(page);
+          await page.waitForFunction(cfi=>glyph(cfi),interleaved);
+          assert.equal(await page.evaluate(cfi=>glyph(cfi),interleaved),true,'preceding section font completion cannot displace the new glyph');
+
+          const closed=await page.evaluate(async()=>{
+            window.sectionDelays={1:150};
+            const first=view.goTo(1),second=view.goTo(0);
+            await new Promise(resolve=>setTimeout(resolve,40));
+            view.close();
+            await Promise.all([first,second]);
+            await new Promise(resolve=>setTimeout(resolve,250));
+            return {location:view.lastLocation,closed:context.signal.aborted};
+          });
+          assert.equal(closed.closed,true,'actual view close releases font/layout owner');
+          assert.equal(closed.location,null,'late document completion cannot restore progress after close');
           assert.deepEqual(errors, []);
-        } finally { delayed=false;fontDelayed=false;release();releaseFonts();await context.close(); }
+        } finally { delayed=false;fontDelayed=false;release();releaseFonts();for(const index of heldSections)releaseSection(index);await context.close(); }
       });
     }
   } finally { release();releaseFonts();await browser.close();await new Promise(resolve => server.close(resolve)); }

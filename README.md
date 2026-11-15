@@ -56,7 +56,7 @@ pnpm test:reader-browser
 
 It uses synthetic chapters with the pinned Foliate renderer at desktop and mobile viewport sizes. It verifies instant text visibility and retained page-turn movement, without requiring a Talebook account or native host. This lane does not replace Moke integration or physical e-ink checks.
 
-Cold restoration also checks real CFI ranges across late font styles, reflow and repeated host restore requests. A pending restoration yields to subsequent page turns, jumps and close, so font completion cannot send the reader back to an earlier position.
+Cold restoration also checks real CFI ranges across late font styles, reflow and repeated host restore requests. Jumps and page turns run in request order across initialization and slow document loads. A pending restoration yields to subsequent page turns and jumps; the latest reading context remains protected until the participating documents' fonts settle. The one-shot host launch restore yields to accepted reading actions. Close cancels queued navigation and font/layout waits.
 
 For development with hot reload:
 

@@ -13,6 +13,7 @@ export const preserveInitialLocation = (
   const { signal } = controller;
   const { renderer } = view;
   const target = view.resolveNavigation(location);
+  let positioning = false;
   const cancel = () => controller.abort();
   const onNavigate = (event: Event) => {
     // Moke can repeat the initial restore after book:opened. It is the same
@@ -27,6 +28,7 @@ export const preserveInitialLocation = (
   };
   view.addEventListener('navigate-start', onNavigate);
   view.addEventListener('reading-action', cancel);
+  view.addEventListener('reading-close', cancel);
   // Cancel before foliate forwards a user relocate to Reader's progress writer.
   renderer.addEventListener('relocate', onRelocate, { capture: true });
   signal.addEventListener(
@@ -34,6 +36,7 @@ export const preserveInitialLocation = (
     () => {
       view.removeEventListener('navigate-start', onNavigate);
       view.removeEventListener('reading-action', cancel);
+      view.removeEventListener('reading-close', cancel);
       renderer.removeEventListener('relocate', onRelocate, { capture: true });
     },
     { once: true },
@@ -49,12 +52,19 @@ export const preserveInitialLocation = (
     });
     signal.addEventListener('abort', onAbort!, { once: true });
     try {
-      await Promise.race([stylesheetLoads.get(doc), aborted]);
+      // Earlier retained sections contribute to the target's scroll offset.
+      // Waiting only for the target's fonts still permits a preceding section
+      // to shrink later and move the same Range out of the viewport.
+      const documents = renderer.getContents().map((content) => content.doc);
+      await Promise.race([
+        Promise.all(documents.map((document) => stylesheetLoads.get(document))),
+        aborted,
+      ]);
       if (signal.aborted) return;
       // Force style resolution before obtaining the *new* font-ready promise.
-      doc.documentElement.getBoundingClientRect();
+      for (const document of documents) document.documentElement.getBoundingClientRect();
       const { fontsReady } = await import('foliate-js/paginator.js');
-      await Promise.race([fontsReady(doc), aborted]);
+      await Promise.race([Promise.all(documents.map((document) => fontsReady(document))), aborted]);
       if (signal.aborted) return;
       // Let the font layout and its ResizeObserver callbacks finish this frame.
       await Promise.race([
@@ -72,13 +82,74 @@ export const preserveInitialLocation = (
       )
         return;
       const anchor = target.anchor(doc);
+      positioning = true;
       cancel();
       await renderer.scrollToAnchor?.(anchor);
     } finally {
+      positioning = false;
       if (frame !== undefined) cancelAnimationFrame(frame);
       signal.removeEventListener('abort', onAbort!);
       cancel();
     }
   };
-  return { signal, cancel, complete };
+  return {
+    signal,
+    cancel,
+    complete,
+    get positioning() {
+      return positioning;
+    },
+  };
+};
+
+// Every explicit relocation can become the new font/layout owner, including
+// page turns made while a different chapter's stylesheet is still loading.
+// Keep the real Range intent; passive resize/container-scroll reports must not
+// replace it or leak a provisional page into the persistent progress store.
+export const preserveReadingContext = (
+  view: FoliateView,
+  stylesheetLoads: WeakMap<Document, Promise<void>>,
+  isRestoring: () => boolean = () => false,
+) => {
+  const lifetime = new AbortController();
+  let pending: ReturnType<typeof preserveInitialLocation> | undefined;
+  let provisional = false;
+  const renderer = view.renderer;
+  const relocate = (event: Event) => {
+    if (pending?.positioning || isRestoring()) {
+      provisional = false;
+      return;
+    }
+    const { reason, range, index } = (
+      event as CustomEvent<{
+        reason: string;
+        range: Range;
+        index: number;
+      }>
+    ).detail;
+    const passive = reason === 'anchor' || reason === 'container-scroll';
+    provisional = passive && !!pending && !pending.signal.aborted;
+    if (passive || !range || view.isFixedLayout) return;
+    pending?.cancel();
+    const owner = preserveInitialLocation(view, view.getCFI(index, range), stylesheetLoads);
+    pending = owner;
+    void owner.complete().catch((error) => {
+      console.warn('Unable to finish reading context layout', error);
+    });
+  };
+  renderer.addEventListener('relocate', relocate, { capture: true });
+  const cancel = () => {
+    lifetime.abort();
+    pending?.cancel();
+    renderer.removeEventListener('relocate', relocate, { capture: true });
+    view.removeEventListener('reading-close', cancel);
+  };
+  view.addEventListener('reading-close', cancel);
+  return {
+    signal: lifetime.signal,
+    cancel,
+    get provisional() {
+      return provisional;
+    },
+  };
 };
