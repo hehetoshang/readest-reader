@@ -47,7 +47,7 @@ pnpm start
 
 Open `http://127.0.0.1:3001/readest/reader`. A browser can verify the static shell; opening a host-authorized local file requires a Tauri host implementing the contract below.
 
-The paginator's text-fade regression runs in a separate headless browser lane:
+The paginator's text-fade and initial-location regressions run in a separate headless browser lane:
 
 ```bash
 pnpm exec playwright install chromium --only-shell
@@ -55,6 +55,8 @@ pnpm test:reader-browser
 ```
 
 It uses synthetic chapters with the pinned Foliate renderer at desktop and mobile viewport sizes. It verifies instant text visibility and retained page-turn movement, without requiring a Talebook account or native host. This lane does not replace Moke integration or physical e-ink checks.
+
+Cold restoration also checks real CFI ranges across late font styles, reflow and repeated host restore requests. Jumps and page turns run in request order across initialization and slow document loads. A pending restoration yields to subsequent page turns and jumps; the latest reading context remains protected until the participating documents' fonts settle. The one-shot host launch restore yields to accepted reading actions. Close cancels queued navigation and font/layout waits.
 
 For development with hot reload:
 
