@@ -1,4 +1,10 @@
 import { isMokeRemoteSourceUrl } from '@/services/mokeRemoteSource';
+import {
+  retireBookData,
+  trackCancelledBookInitialization,
+  setViewBookDocument,
+  releaseUnusedBookData,
+} from '@/services/bookResourceLifetime';
 import { create } from 'zustand';
 
 import {
@@ -13,7 +19,7 @@ import {
 import { Insets } from '@/types/misc';
 import { EnvConfigType } from '@/services/environment';
 import { FoliateView } from '@/types/view';
-import { DocumentLoader, TOCItem } from '@/libs/document';
+import { BookDoc, DocumentLoader, TOCItem } from '@/libs/document';
 import {
   isPseStreamFileName,
   openPseStreamBook,
@@ -40,6 +46,8 @@ import {
 } from '@/services/mokeBridge';
 
 const pendingNavCacheWrites = new Map<string, () => Promise<void>>();
+const pendingOpens = new Map<string, { controller: AbortController; completed: Promise<void> }>();
+const pendingBookInitializations = new Map<string, Promise<void>>();
 
 const scheduleNavCacheWrite = (bookHash: string, write: () => Promise<void>) => {
   pendingNavCacheWrites.set(bookHash, write);
@@ -163,6 +171,13 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
   },
 
   clearViewState: (key: string) => {
+    const pending = pendingOpens.get(key);
+    if (pending) {
+      trackCancelledBookInitialization(key.split('-')[0]!, pending.completed);
+      pending.controller.abort();
+    }
+    pendingOpens.delete(key);
+    setViewBookDocument(key, null);
     // An open that closes before its first relocate has no reason to persist
     // a warm-open cache afterward.
     pendingNavCacheWrites.delete(key.split('-')[0]!);
@@ -176,6 +191,9 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       delete viewStates[key];
       return { viewStates };
     });
+    void import('@/services/bookResourceLifetime')
+      .then(({ releaseUnusedBookData }) => releaseUnusedBookData(key.split('-')[0]!))
+      .catch(error => console.warn('Failed to release closed book:', error));
   },
   getViewState: (key: string) => get().viewStates[key] || null,
   initViewState: async (
@@ -192,8 +210,20 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       return;
     }
 
-    const booksData = useBookDataStore.getState().booksData;
-    const bookData = booksData[id];
+    const previousInitialization = pendingBookInitializations.get(id);
+    let finishInitialization!: () => void;
+    const completed = new Promise<void>(resolve => { finishInitialization = resolve; });
+    const initialization = previousInitialization
+      ? previousInitialization.then(() => completed)
+      : completed;
+    pendingBookInitializations.set(id, initialization);
+    const previousOpen = pendingOpens.get(key);
+    if (previousOpen) {
+      trackCancelledBookInitialization(id, previousOpen.completed);
+      previousOpen.controller.abort();
+    }
+    const opening = new AbortController();
+    pendingOpens.set(key, { controller: opening, completed });
     set((state) => ({
       viewStates: {
         ...state.viewStates,
@@ -216,7 +246,12 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       },
     }));
     let openedFile: File | null = null;
+    let ownedDocument: BookDoc | null = null;
     try {
+      // Concurrent panes share the published document instead of opening two workers.
+      await previousInitialization;
+      if (opening.signal.aborted) throw new Error('Book opening cancelled');
+      const bookData = useBookDataStore.getState().booksData[id];
       const appService = await envConfig.getAppService();
       const { settings } = useSettingsStore.getState();
       const { getBookByHash, library } = useLibraryStore.getState();
@@ -231,6 +266,7 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       // their sidecar I/O immediately so Tauri filesystem round-trips overlap
       // file handoff and EPUB parsing instead of serializing the critical path.
       const configPromise = appService.loadBookConfig(book, settings);
+      void configPromise.catch(() => undefined);
       const cachedNavPromise =
         book.format === 'EPUB' ? appService.loadBookNav(book) : Promise.resolve(null);
       // Fixed-layout EPUBs do not consume the speculative nav result below.
@@ -250,12 +286,14 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
           const data = parsePseStreamFileName(book.url!);
           const doc = await openPseStreamBook(data);
           bookDoc = doc.book;
+          ownedDocument = bookDoc;
           file = null;
         } else if (isFeed) {
           const { feedUrl } = parseFeedBookUrl(book.url!);
           // AppService publicly exposes the readFile/writeFile/exists surface of FileSystem.
           const fs = appService as unknown as FileSystem;
           bookDoc = await openFeedBookDoc(fs, book.hash, feedUrl, book.title);
+          ownedDocument = bookDoc;
           file = null;
         } else {
           const content = (await appService.loadBookContent(book)) as BookContent;
@@ -263,8 +301,9 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
           openedFile = file;
           const doc = await new DocumentLoader(file, {
             nativeFilePath: content.nativeFilePath ?? undefined,
-          }).open();
+          }).open({ signal: opening.signal });
           bookDoc = doc.book;
+          ownedDocument = bookDoc;
         }
       }
       const config = await configPromise;
@@ -353,12 +392,20 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       const isFixedLayout =
         bookDoc.rendition?.layout === 'pre-paginated' || FIXED_LAYOUT_FORMATS.has(book.format);
       const newBookData: BookData = { id, book, file, config, bookDoc, isFixedLayout };
+      if (opening.signal.aborted) throw new Error('Book opening cancelled');
+      if (bookData && (bookData.bookDoc !== bookDoc || bookData.file !== file)) {
+        retireBookData(id, bookData);
+      }
       useBookDataStore.setState((state) => ({
         booksData: {
           ...state.booksData,
           [id]: newBookData,
         },
       }));
+      setViewBookDocument(key, bookDoc);
+      void releaseUnusedBookData(id).catch(error => console.warn('Failed to release retired book:', error));
+      ownedDocument = null;
+      openedFile = null;
       const configViewSettings = config.viewSettings!;
       const globalViewSettings = settings.globalViewSettings;
       set((state) => ({
@@ -391,8 +438,12 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         });
       }
     } catch (error) {
+      await Promise.resolve().then(() => ownedDocument?.destroy?.()).catch(cleanupError => {
+        console.warn('Failed to destroy unopened document:', cleanupError);
+      });
       const closable = openedFile as (File & { close?: () => Promise<void> }) | null;
       await closable?.close?.().catch(() => undefined);
+      if (opening.signal.aborted) throw error;
       pendingNavCacheWrites.delete(id);
       console.error(error);
       set((state) => ({
@@ -418,6 +469,10 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         },
       }));
       throw error;
+    } finally {
+      finishInitialization();
+      if (pendingBookInitializations.get(id) === initialization) pendingBookInitializations.delete(id);
+      if (pendingOpens.get(key)?.controller === opening) pendingOpens.delete(key);
     }
   },
   getViewSettings: (key: string) => get().viewStates[key]?.viewSettings || null,

@@ -414,7 +414,7 @@ export class DocumentLoader {
     );
   }
 
-  public async open(): Promise<{ book: BookDoc; format: BookFormat }> {
+  public async open({ signal }: { signal?: AbortSignal } = {}): Promise<{ book: BookDoc; format: BookFormat }> {
     let book = null;
     let format: BookFormat = 'EPUB';
     if (!this.file.size) {
@@ -473,7 +473,7 @@ export class DocumentLoader {
         }
       } else if (await this.isPDF()) {
         const { makePDF } = await import('foliate-js/pdf.js');
-        book = await makePDF(this.file);
+        book = await makePDF(this.file, { signal });
         format = 'PDF';
       } else if (await (await import('foliate-js/mobi.js')).isMOBI(this.file)) {
         const fflate = await import('foliate-js/vendor/fflate.js');

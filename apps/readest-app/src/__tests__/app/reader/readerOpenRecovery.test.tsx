@@ -91,6 +91,7 @@ vi.mock('@/utils/nav', async (importOriginal) => {
 });
 vi.mock('@/utils/discord', () => ({ clearDiscordPresence: vi.fn() }));
 vi.mock('@/services/mokeBridge', () => ({ emitReaderEvent: vi.fn(async () => undefined) }));
+vi.mock('@/services/bookResourceLifetime', () => ({ releaseUnusedBookData: vi.fn(async () => undefined) }));
 vi.mock('@/services/mokeRemoteSource', () => ({
   isMokeRemoteSourceUrl: () => false,
   mokeRemoteSourceErrorDetail: () => null,

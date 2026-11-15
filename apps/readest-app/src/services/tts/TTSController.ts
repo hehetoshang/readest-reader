@@ -1,4 +1,5 @@
 import { FoliateView, ViewTTS } from '@/types/view';
+import { BookDocumentOwner } from '@/services/bookDocumentOwner';
 import { AppService } from '@/types/system';
 import type { PairedAudiobook } from '@/types/book';
 import { SectionItem } from '@/libs/document';
@@ -104,6 +105,7 @@ export class TTSController extends EventTarget {
   readonly kind = 'tts' as const;
   appService: AppService | null = null;
   view: FoliateView;
+  #bookResources: BookDocumentOwner;
   // The owning reader's book key, bound (and re-bound) by attachView; the
   // per-book TTS cache derives its book hash from it.
   bookKey?: string;
@@ -191,6 +193,7 @@ export class TTSController extends EventTarget {
     isAuthenticated: boolean = false,
     preprocessCallback?: (ssml: string) => Promise<string>,
     onSectionChange?: (sectionIndex: number) => Promise<void>,
+    resourceId = '',
   ) {
     super();
     this.ttsWebClient = new WebSpeechClient(this);
@@ -204,6 +207,7 @@ export class TTSController extends EventTarget {
     this.ttsClient = this.ttsWebClient;
     this.appService = appService;
     this.view = view;
+    this.#bookResources = new BookDocumentOwner(resourceId, view.book);
     this.isAuthenticated = isAuthenticated;
     this.preprocessCallback = preprocessCallback;
     this.onSectionChange = onSectionChange;
@@ -298,6 +302,10 @@ export class TTSController extends EventTarget {
   // forward() may have auto-advanced during prep, and a seed captured earlier
   // would replay the previous paragraph.
   async attachView(view: FoliateView, bindings: TTSViewBindings): Promise<void> {
+    return this.#bookResources.run(view.book, () => this.#attachView(view, bindings));
+  }
+
+  async #attachView(view: FoliateView, bindings: TTSViewBindings): Promise<void> {
     const epoch = ++this.#attachEpoch;
     const oldTts = this.#getTts();
     const sectionIndex = Math.max(this.#ttsSectionIndex, 0);
@@ -343,6 +351,7 @@ export class TTSController extends EventTarget {
     if (epoch !== this.#attachEpoch) return;
 
     // Synchronous swap.
+    this.#bookResources.move(view.book);
     this.view = view;
     this.bookKey = bindings.bookKey;
     this.preprocessCallback = bindings.preprocessCallback;
@@ -378,6 +387,10 @@ export class TTSController extends EventTarget {
   }
 
   async init() {
+    return this.#bookResources.run(this.view.book, () => this.#initialize());
+  }
+
+  async #initialize() {
     const availableClients = [];
     if (await this.ttsEdgeClient.init()) {
       availableClients.push(this.ttsEdgeClient);
@@ -505,6 +518,10 @@ export class TTSController extends EventTarget {
     sectionIndex: number,
     doc: Document,
   ): Promise<MediaOverlaySection | null> | MediaOverlaySection | null {
+    return this.#bookResources.run(view.book, () => this.#readNarrationSection(view, sectionIndex, doc));
+  }
+
+  #readNarrationSection(view: FoliateView, sectionIndex: number, doc: Document) {
     const lang = this.ttsLang || view.language?.canonical || 'en';
     if (this.#usesPairedAudiobook(view.book) && this.#pairedAudiobook) {
       return loadPairedAudiobookSection(view.book, this.#pairedAudiobook, sectionIndex, doc, lang);
@@ -536,15 +553,18 @@ export class TTSController extends EventTarget {
   // A fresh section document replayed through the display transform pipeline
   // (see transformTTSSectionDocument), with the lang fixup TTS voices need.
   async #createSectionDoc(section: SectionItem): Promise<Document> {
-    const raw = await section.createDocument();
-    const doc = await transformTTSSectionDocument(this.view.book, section.id, raw);
-    const html = doc.querySelector('html');
-    const lang = html?.getAttribute('lang') || html?.getAttribute('xml:lang') || '';
-    if (html && !isValidLang(lang) && this.ttsLang) {
-      html.setAttribute('lang', this.ttsLang);
-      html.setAttribute('xml:lang', this.ttsLang);
-    }
-    return doc;
+    const book = this.view.book;
+    return this.#bookResources.run(book, async () => {
+      const raw = await section.createDocument();
+      const doc = await transformTTSSectionDocument(book, section.id, raw);
+      const html = doc.querySelector('html');
+      const lang = html?.getAttribute('lang') || html?.getAttribute('xml:lang') || '';
+      if (html && !isValidLang(lang) && this.ttsLang) {
+        html.setAttribute('lang', this.ttsLang);
+        html.setAttribute('xml:lang', this.ttsLang);
+      }
+      return doc;
+    });
   }
 
   #getHighlighter() {
@@ -623,6 +643,10 @@ export class TTSController extends EventTarget {
   }
 
   async #initTTSForSection(sectionIndex: number): Promise<boolean> {
+    return this.#bookResources.run(this.view.book, () => this.#initializeTTSSection(sectionIndex));
+  }
+
+  async #initializeTTSSection(sectionIndex: number): Promise<boolean> {
     const sections = this.view.book.sections;
     if (!sections || sectionIndex < 0 || sectionIndex >= sections.length) {
       return false;
@@ -1883,6 +1907,11 @@ export class TTSController extends EventTarget {
   }
 
   async shutdown() {
+    return this.#bookResources.close(() => this.#shutdown());
+  }
+
+  async #shutdown() {
+    this.#attachEpoch++;
     stopAudioKeepAlive();
     await this.stop();
     this.#clearAllHighlights();

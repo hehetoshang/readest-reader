@@ -1,5 +1,6 @@
 import { FileHandle, open, BaseDirectory, SeekMode } from '@tauri-apps/plugin-fs';
 import { getOSPlatform } from './misc';
+import { FileLifetime } from './fileLifetime';
 
 class DeferredBlob extends Blob {
   #dataPromise: Promise<ArrayBuffer>;
@@ -8,6 +9,7 @@ class DeferredBlob extends Blob {
   constructor(dataPromise: Promise<ArrayBuffer>, type: string) {
     super();
     this.#dataPromise = dataPromise;
+    void dataPromise.catch(() => undefined);
     this.#type = type;
   }
 
@@ -57,7 +59,7 @@ export interface ClosableFile extends File {
 
 export interface RemoteFileTransport {
   fetch(url: string, init?: RequestInit): Promise<Response>;
-  close?(): void;
+  close?(): void | Promise<void>;
   /** Force a real HEAD even on Android, where ordinary asset URLs use Range. */
   openWithHead?: boolean;
   /** Optional source-specific cache window; online books keep this small. */
@@ -69,6 +71,8 @@ const defaultRemoteFileTransport: RemoteFileTransport = {
 };
 
 export class NativeFile extends File implements ClosableFile {
+  #lifetime = new FileLifetime();
+  #opening: Promise<this> | undefined;
   #handle: FileHandle | null = null;
   #fp: string;
   #name: string;
@@ -90,21 +94,35 @@ export class NativeFile extends File implements ClosableFile {
     this.#name = name || fp;
   }
 
-  async open() {
-    this.#handle = await open(this.#fp, this.#baseDir ? { baseDir: this.#baseDir } : undefined);
-    const stats = await this.#handle.stat();
-    this.#size = stats.size;
-    this.#lastModified = stats.mtime ? stats.mtime.getTime() : Date.now();
-    return this;
+  open() {
+    if (this.#opening && !this.#lifetime.controller.signal.aborted) return this.#opening;
+    this.#opening = this.#lifetime.run(async () => {
+      this.#lifetime.check();
+      if (this.#handle) return this;
+      const handle = await open(this.#fp, this.#baseDir ? { baseDir: this.#baseDir } : undefined);
+      try {
+        const stats = await handle.stat();
+        this.#lifetime.check();
+        this.#handle = handle;
+        this.#size = stats.size;
+        this.#lastModified = stats.mtime ? stats.mtime.getTime() : Date.now();
+        return this;
+      } catch (error) {
+        await handle.close();
+        throw error;
+      }
+    });
+    return this.#opening;
   }
 
-  async close() {
-    if (this.#handle) {
-      await this.#handle.close();
-      this.#handle = null;
-    }
+  close() {
     this.#cache.clear();
     this.#order = [];
+    return this.#lifetime.close(async () => {
+      const handle = this.#handle;
+      this.#handle = null;
+      await handle?.close();
+    }, true);
   }
 
   override get name() {
@@ -128,18 +146,27 @@ export class NativeFile extends File implements ClosableFile {
   }
 
   async stat() {
-    return this.#handle?.stat();
+    return this.#lifetime.run(async () => {
+      this.#lifetime.check();
+      return this.#handle?.stat();
+    });
   }
 
   async seek(offset: number, whence: SeekMode): Promise<number> {
-    if (!this.#handle) {
-      throw new Error('File handle is not open');
-    }
-    return this.#handle.seek(offset, whence);
+    return this.#lifetime.run(async () => {
+      this.#lifetime.check();
+      if (!this.#handle) throw new Error('File handle is not open');
+      return this.#handle.seek(offset, whence);
+    });
   }
 
   // exclusive reading of the end: [start, end)
-  async readData(start: number, end: number): Promise<ArrayBuffer> {
+  readData(start: number, end: number): Promise<ArrayBuffer> {
+    return this.#lifetime.run(() => this.#readData(start, end));
+  }
+
+  async #readData(start: number, end: number): Promise<ArrayBuffer> {
+    this.#lifetime.check();
     start = Math.max(0, start);
     end = Math.max(start, Math.min(this.size, end));
     const size = end - start;
@@ -150,6 +177,7 @@ export class NativeFile extends File implements ClosableFile {
         await handle.seek(start, SeekMode.Start);
         const buffer = new Uint8Array(size);
         await handle.read(buffer);
+        this.#lifetime.check();
         return buffer.buffer;
       } finally {
         await handle.close();
@@ -196,6 +224,7 @@ export class NativeFile extends File implements ClosableFile {
       const buffer = new Uint8Array(chunkSize);
       await handle.read(buffer);
 
+      this.#lifetime.check();
       // Only one thread reaches here per unique range
       this.#cache.set(chunkStart, buffer.buffer);
       this.#updateAccessOrder(chunkStart);
@@ -232,53 +261,45 @@ export class NativeFile extends File implements ClosableFile {
   }
 
   override stream(): ReadableStream<Uint8Array<ArrayBuffer>> {
-    const CHUNK_SIZE = 1024 * 1024;
     let offset = 0;
-    let streamHandle: FileHandle | null = null;
-    let streamClosed = false;
-
-    const ensureHandle = async () => {
-      if (streamHandle) return streamHandle;
-      streamHandle = await open(this.#fp, this.#baseDir ? { baseDir: this.#baseDir } : undefined);
-      streamClosed = false;
-      return streamHandle;
-    };
-
-    const closeHandle = async () => {
-      if (!streamHandle || streamClosed) return;
-      await streamHandle.close();
-      streamClosed = true;
-      streamHandle = null;
-    };
-
+    let cancelled = false;
+    let pending: Promise<void> | undefined;
     return new ReadableStream<Uint8Array<ArrayBuffer>>({
-      pull: async (controller) => {
-        const handle = await ensureHandle();
-
-        if (offset >= this.size) {
-          await closeHandle();
-          controller.close();
-          return;
-        }
-
-        const end = Math.min(offset + CHUNK_SIZE, this.size);
-        const buffer = new Uint8Array(end - offset);
-
-        await handle.seek(offset, SeekMode.Start);
-        const bytesRead = await handle.read(buffer);
-
-        if (bytesRead === null || bytesRead === 0) {
-          await closeHandle();
-          controller.close();
-          return;
-        }
-
-        controller.enqueue(buffer.subarray(0, bytesRead));
-        offset += bytesRead;
+      pull: (controller) => {
+        pending = (async () => {
+          this.#lifetime.check();
+          if (offset >= this.size) {
+            controller.close();
+            return;
+          }
+          const end = Math.min(offset + 1024 * 1024, this.size);
+          // Streaming does not populate the random-access cache.
+          const buffer = await this.#lifetime.run(async () => {
+            this.#lifetime.check();
+            const handle = await open(this.#fp, this.#baseDir ? { baseDir: this.#baseDir } : undefined);
+            try {
+              await handle.seek(offset, SeekMode.Start);
+              const bytes = new Uint8Array(end - offset);
+              const length = await handle.read(bytes);
+              this.#lifetime.check();
+              return bytes.subarray(0, length ?? 0);
+            } finally {
+              await handle.close();
+            }
+          });
+          if (cancelled) return;
+          if (!buffer.byteLength) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(buffer);
+          offset += buffer.byteLength;
+        })();
+        return pending;
       },
-
       cancel: async () => {
-        await closeHandle();
+        cancelled = true;
+        await pending?.catch(() => undefined);
       },
     });
   }
@@ -295,6 +316,7 @@ export class NativeFile extends File implements ClosableFile {
 }
 
 export class RemoteFile extends File implements ClosableFile {
+  #lifetime = new FileLifetime();
   url: string;
   #name: string;
   #lastModified: number;
@@ -370,22 +392,29 @@ export class RemoteFile extends File implements ClosableFile {
   }
 
   async _open_with_head() {
-    const response = await this.#transport.fetch(this.url, { method: 'HEAD' });
+    this.#lifetime.check();
+    const response = await this.#transport.fetch(this.url, {
+      method: 'HEAD', signal: this.#lifetime.controller.signal,
+    });
     if (!response.ok) {
       throw new Error(`Failed to fetch file size: ${response.status}`);
     }
+    this.#lifetime.check();
     this.#size = Number(response.headers.get('content-length'));
     this.#type = response.headers.get('content-type') || '';
     return this;
   }
 
   async _open_with_range() {
+    this.#lifetime.check();
     const response = await this.#transport.fetch(this.url, {
+      signal: this.#lifetime.controller.signal,
       headers: { Range: `bytes=${0}-${1023}` },
     });
     if (!response.ok) {
       throw new Error(`Failed to fetch file size: ${response.status}`);
     }
+    this.#lifetime.check();
     this.#size = Number(response.headers.get('content-range')?.split('/')[1]);
     this.#type = response.headers.get('content-type') || '';
     return this;
@@ -408,6 +437,7 @@ export class RemoteFile extends File implements ClosableFile {
     ) {
       throw new Error('Invalid X-Total-Size from rangefile protocol');
     }
+    this.#lifetime.check();
     this.#size = size;
     this.#type = response.headers.get('content-type') || '';
     return this;
@@ -415,6 +445,9 @@ export class RemoteFile extends File implements ClosableFile {
 
   async #fetchQueryRange(url: string): Promise<Response> {
     const controller = new AbortController();
+    this.#lifetime.check();
+    const abort = () => controller.abort();
+    this.#lifetime.controller.signal.addEventListener('abort', abort, { once: true });
     const timeout = setTimeout(() => controller.abort(), RemoteFile.RANGE_FETCH_TIMEOUT_MS);
     try {
       return await this.#transport.fetch(url, { signal: controller.signal });
@@ -425,10 +458,16 @@ export class RemoteFile extends File implements ClosableFile {
       throw error;
     } finally {
       clearTimeout(timeout);
+      this.#lifetime.controller.signal.removeEventListener('abort', abort);
     }
   }
 
-  async open() {
+  open() {
+    return this.#lifetime.run(() => this.#open());
+  }
+
+  async #open() {
+    this.#lifetime.check();
     if (this.#queryRange) {
       return this._open_with_query();
     }
@@ -439,29 +478,42 @@ export class RemoteFile extends File implements ClosableFile {
     return this._open_with_head();
   }
 
-  async close(): Promise<void> {
-    this.#transport.close?.();
+  close(): Promise<void> {
     this.#cache.clear();
     this.#order = [];
+    return this.#lifetime.close(() => this.#transport.close?.());
   }
 
-  async fetchRangePart(start: number, end: number) {
+  fetchRangePart(start: number, end: number): Promise<ArrayBuffer> {
+    return this.#lifetime.run(() => this.#fetchRangePart(start, end));
+  }
+
+  async #fetchRangePart(start: number, end: number) {
+    this.#lifetime.check();
     start = Math.max(0, start);
     end = Math.min(this.size - 1, end);
     // console.log(`Fetching range: ${start}-${end}, size: ${end - start + 1}`);
     const response = this.#queryRange
       ? await this.#fetchQueryRange(`${this.url}&start=${start}&end=${end}`)
       : await this.#transport.fetch(this.url, {
+          signal: this.#lifetime.controller.signal,
           headers: { Range: `bytes=${start}-${end}` },
         });
     if (!response.ok) {
       throw new Error(`Failed to fetch range: ${response.status}`);
     }
-    return response.arrayBuffer();
+    const buffer = await response.arrayBuffer();
+    this.#lifetime.check();
+    return buffer;
   }
 
   // inclusive reading of the end: [start, end]
-  async fetchRange(start: number, end: number): Promise<ArrayBuffer> {
+  fetchRange(start: number, end: number): Promise<ArrayBuffer> {
+    return this.#lifetime.run(() => this.#fetchRange(start, end));
+  }
+
+  async #fetchRange(start: number, end: number): Promise<ArrayBuffer> {
+    this.#lifetime.check();
     const rangeSize = end - start + 1;
     const MAX_RANGE_LEN = 1024 * 1000;
 
@@ -520,6 +572,7 @@ export class RemoteFile extends File implements ClosableFile {
     const chunkEnd = Math.max(end, start + this.#maxCacheChunkSize - 1024 - 1);
     const buffer = await this.fetchRangePart(chunkStart, chunkEnd);
 
+    this.#lifetime.check();
     // Only one thread reaches here per unique range
     this.#cache.set(chunkStart, buffer);
     this.#updateAccessOrder(chunkStart);
@@ -556,19 +609,28 @@ export class RemoteFile extends File implements ClosableFile {
   override stream(): ReadableStream<Uint8Array<ArrayBuffer>> {
     const CHUNK_SIZE = 1024 * 1024;
     let offset = 0;
+    let cancelled = false;
+    let pending: Promise<ArrayBuffer> | undefined;
 
     return new ReadableStream<Uint8Array<ArrayBuffer>>({
       pull: async (controller) => {
+        this.#lifetime.check();
         if (offset >= this.size) {
           controller.close();
           return;
         }
 
         const end = Math.min(offset + CHUNK_SIZE, this.size);
-        const buffer = await this.fetchRange(offset, end - 1);
+        pending = this.fetchRange(offset, end - 1);
+        const buffer = await pending;
+        if (cancelled) return;
 
         controller.enqueue(new Uint8Array(buffer));
         offset = end;
+      },
+      cancel: async () => {
+        cancelled = true;
+        await pending?.catch(() => undefined);
       },
     });
   }

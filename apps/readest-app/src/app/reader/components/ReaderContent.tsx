@@ -428,7 +428,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     }
 
     try {
-      getView(bookKey)?.close();
+      await getView(bookKey)?.close();
       getView(bookKey)?.remove();
     } catch {
       console.info('Error closing book', bookKey);
@@ -452,6 +452,8 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     }
 
     clearViewState(bookKey);
+    const { releaseUnusedBookData } = await import('@/services/bookResourceLifetime');
+    await releaseUnusedBookData(bookKey.split('-')[0]!);
   };
 
   const navigateBackToLibrary = async (recover = false) => {
