@@ -47,6 +47,15 @@ pnpm start
 
 Open `http://127.0.0.1:3001/readest/reader`. A browser can verify the static shell; opening a host-authorized local file requires a Tauri host implementing the contract below.
 
+The paginator's text-fade regression runs in a separate headless browser lane:
+
+```bash
+pnpm exec playwright install chromium --only-shell
+pnpm test:reader-browser
+```
+
+It uses synthetic chapters with the pinned Foliate renderer at desktop and mobile viewport sizes. It verifies instant text visibility and retained page-turn movement, without requiring a Talebook account or native host. This lane does not replace Moke integration or physical e-ink checks.
+
 For development with hot reload:
 
 ```bash
