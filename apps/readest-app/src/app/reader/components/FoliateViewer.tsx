@@ -21,6 +21,7 @@ import { useCustomFontStore } from '@/store/customFontStore';
 import { useParallelViewStore } from '@/store/parallelViewStore';
 import { useMouseEvent, useTouchEvent, useOpenMediaEvent } from '../hooks/useIframeEvents';
 import { useCapturedTurn, applyPageTurnAttributes } from '../hooks/useCapturedTurn';
+import { isReaderEink } from '../utils/einkTurn';
 import { useBrightnessGesture } from '../hooks/useBrightnessGesture';
 import { registerBookmarkPullDoc } from '../utils/bookmarkPullGesture';
 import BrightnessOverlay from './BrightnessOverlay';
@@ -415,7 +416,7 @@ const FoliateViewer: React.FC<{
       applyTableTouchScroll(detail.doc);
       applyThemeModeClass(detail.doc, isDarkMode);
       applyScrollModeClass(detail.doc, viewSettings.scrolled || false);
-      applyEinkModeAttribute(detail.doc, viewSettings.isEink || false);
+      applyEinkModeAttribute(detail.doc, isReaderEink(viewSettings));
       applyScrollbarStyle(document, viewSettings.hideScrollbar || false);
       keepTextAlignment(detail.doc);
       handleA11yNavigation(viewRef.current, detail.doc, {
@@ -742,19 +743,13 @@ const FoliateViewer: React.FC<{
       applyTranslationStyle(viewSettings);
 
       doubleClickDisabled.current = viewSettings.disableDoubleClick!;
-      const animated = viewSettings.animated!;
-      const eink = viewSettings.isEink!;
+      const eink = isReaderEink(viewSettings);
       const maxColumnCount = viewSettings.maxColumnCount!;
       const maxInlineSize = getMaxInlineSize(viewSettings);
       const maxBlockSize = viewSettings.maxBlockSize!;
       const screenOrientation = viewSettings.screenOrientation!;
       if (appService?.isMobileApp) {
         await lockScreenOrientation({ orientation: screenOrientation });
-      }
-      if (animated) {
-        view.renderer.setAttribute('animated', '');
-      } else {
-        view.renderer.removeAttribute('animated');
       }
       // Arms the foliate CursorAutohider — goes on the view element itself,
       // not the renderer, and is re-checked on every mousemove so the
@@ -773,11 +768,6 @@ const FoliateViewer: React.FC<{
         view.renderer.setAttribute('gpu-composite', '');
       }
       if (appService?.isAndroidApp) {
-        if (eink) {
-          view.renderer.setAttribute('eink', '');
-        } else {
-          view.renderer.removeAttribute('eink');
-        }
         applyEinkMode(eink);
       }
       if (bookDoc?.rendition?.layout === 'pre-paginated') {
@@ -951,7 +941,7 @@ const FoliateViewer: React.FC<{
         }
         applyThemeModeClass(doc, isDarkMode);
         applyScrollModeClass(doc, viewSettings.scrolled || false);
-        applyEinkModeAttribute(doc, viewSettings.isEink || false);
+        applyEinkModeAttribute(doc, isReaderEink(viewSettings));
         applyScrollbarStyle(document, viewSettings.hideScrollbar || false);
       });
 

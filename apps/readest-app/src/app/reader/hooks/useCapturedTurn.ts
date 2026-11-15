@@ -13,6 +13,7 @@ import { TURN_GESTURE_LEFT_INSET_ATTRIBUTE } from '../utils/brightnessGesture';
 import { isLayeredTurnTouchActive, setLayeredTurnTouchClaimed } from '../utils/iframeEventHandlers';
 import { CapturedPageTurn, CapturedTurnStyle } from '../utils/capturedTurn';
 import { renderTurnBackdrop } from '../utils/turnBackdrop';
+import { applyEinkTurnAttributes, isReaderEink } from '../utils/einkTurn';
 import {
   createTurnGestureIntent as createArenaIntent,
   NATIVE_CAPTURED_TURN_ATTRIBUTE,
@@ -49,7 +50,12 @@ export const getCapturedTurnStyle = (
   prepareNativeSlide = getInitializedAppService()?.isMobileApp === true,
 ): CapturedTurnStyle | null => {
   if (!isTauriAppPlatform() || captureBroken) return null;
-  if (!viewSettings.animated || viewSettings.scrolled || viewSettings.isEink || isFixedLayout) {
+  if (
+    !viewSettings.animated ||
+    viewSettings.scrolled ||
+    isReaderEink(viewSettings) ||
+    isFixedLayout
+  ) {
     return null;
   }
   if (viewSettings.pageTurnStyle === 'curl') return 'curl';
@@ -77,9 +83,16 @@ export const applyPageTurnAttributes = (
   isFixedLayout: boolean,
   prepareNativeSlide = getInitializedAppService()?.isMobileApp === true,
 ) => {
+  applyEinkTurnAttributes(view.renderer, viewSettings);
   const captured = getCapturedTurnStyle(viewSettings, isFixedLayout, prepareNativeSlide);
   const style = viewSettings.pageTurnStyle;
-  if (style && style !== 'push' && !captured && detectViewTransitionGroup()) {
+  if (
+    !isReaderEink(viewSettings) &&
+    style &&
+    style !== 'push' &&
+    !captured &&
+    detectViewTransitionGroup()
+  ) {
     view.renderer.setAttribute('turn-style', style);
   } else {
     view.renderer.removeAttribute('turn-style');
