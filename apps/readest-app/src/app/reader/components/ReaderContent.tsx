@@ -452,6 +452,8 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     }
 
     clearViewState(bookKey);
+    const { releaseUnusedBookData } = await import('@/services/bookResourceLifetime');
+    await releaseUnusedBookData(bookKey.split('-')[0]!);
   };
 
   const navigateBackToLibrary = async (recover = false) => {

@@ -129,6 +129,69 @@ test('closes a newly opened source when document initialization fails', async ()
   expect(file.close).toHaveBeenCalledOnce();
 });
 
+test('closing during loading destroys the late document without recreating the view', async () => {
+  useReaderStore.setState({ viewStates: {} });
+  useBookDataStore.setState({ booksData: {} });
+  let finish!: (value: { book: BookDoc }) => void;
+  const pending = new Promise<{ book: BookDoc }>(resolve => { finish = resolve; });
+  const file = Object.assign(new File(['pdf'], 'book.pdf'), { close: vi.fn(async () => {}) });
+  const book = { hash: 'cancelled', format: 'PDF' } as Book;
+  const bookDoc = { metadata: {}, rendition: {}, destroy: vi.fn(async () => {}) } as unknown as BookDoc;
+  const appService = {
+    loadBookContent: vi.fn(async () => ({ book, file })),
+    loadBookConfig: vi.fn(async () => ({ viewSettings: {}, booknotes: [] })),
+  };
+  vi.mocked(useLibraryStore.getState().getBookByHash).mockReturnValue(book);
+  useSettingsStore.setState({ settings: { globalViewSettings: {} } as never });
+  const open = vi.fn(() => pending);
+  vi.mocked(DocumentLoader).mockImplementation(function MockDocumentLoader() {
+    return { open };
+  } as never);
+  const initializing = useReaderStore.getState().initViewState(
+    { getAppService: async () => appService } as never, 'cancelled', 'cancelled-0',
+  );
+  const rejected = expect(initializing).rejects.toThrow('cancelled');
+  await vi.waitFor(() => expect(open).toHaveBeenCalled());
+  const signal = open.mock.calls[0] as unknown as [{ signal: AbortSignal }];
+  useReaderStore.getState().clearViewState('cancelled-0');
+  expect(signal[0].signal.aborted).toBe(true);
+  finish({ book: bookDoc });
+  await rejected;
+  expect(bookDoc.destroy).toHaveBeenCalledOnce();
+  expect(file.close).toHaveBeenCalledOnce();
+  expect(useReaderStore.getState().viewStates['cancelled-0']).toBeUndefined();
+  expect(useBookDataStore.getState().booksData['cancelled']).toBeUndefined();
+});
+
+test('parallel views share one newly loaded document', async () => {
+  useReaderStore.setState({ viewStates: {} });
+  useBookDataStore.setState({ booksData: {} });
+  const file = new File(['pdf'], 'book.pdf');
+  const book = { hash: 'parallel', title: 'Book', format: 'PDF' } as Book;
+  const bookDoc = { metadata: { title: 'Book' }, rendition: {}, sections: [] } as unknown as BookDoc;
+  const appService = {
+    loadBookContent: vi.fn(async () => ({ book, file })),
+    loadBookConfig: vi.fn(async () => ({ viewSettings: {}, booknotes: [] })),
+  };
+  vi.mocked(useLibraryStore.getState().getBookByHash).mockReturnValue(book);
+  useSettingsStore.setState({ settings: { globalViewSettings: {} } as never });
+  const open = vi.fn(async () => ({ book: bookDoc }));
+  vi.mocked(DocumentLoader).mockImplementation(function MockDocumentLoader() {
+    return { open };
+  } as never);
+  const envConfig = { getAppService: async () => appService } as never;
+  await Promise.all([
+    useReaderStore.getState().initViewState(envConfig, 'parallel', 'parallel-1'),
+    useReaderStore.getState().initViewState(envConfig, 'parallel', 'parallel-2', false),
+  ]);
+  expect(open).toHaveBeenCalledOnce();
+  expect(appService.loadBookContent).toHaveBeenCalledOnce();
+  expect(useReaderStore.getState().viewStates['parallel-1']?.key).toBe('parallel-1');
+  expect(useReaderStore.getState().viewStates['parallel-2']?.key).toBe('parallel-2');
+  expect(useReaderStore.getState().viewStates['parallel-1']?.loading).toBe(false);
+  expect(useReaderStore.getState().viewStates['parallel-2']?.loading).toBe(false);
+});
+
 describe('readerStore', () => {
   beforeEach(() => {
     useReaderStore.setState({
