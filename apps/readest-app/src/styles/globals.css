@@ -102,6 +102,13 @@ foliate-view {
   border: none;
 }
 
+/* The paginator fades its content when hiding/revealing a section, even when
+   page-turn animation is off. Keep text swaps instant; push/slide/curl use
+   their own transform/snapshot animations and the independent reader toggle. */
+foliate-view::part(container) {
+  transition: none;
+}
+
 foliate-fxl {
   overflow: scroll;
 }
