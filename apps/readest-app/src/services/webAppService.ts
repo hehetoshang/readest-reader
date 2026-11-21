@@ -5,6 +5,8 @@ import { getOSPlatform, isValidURL } from '@/utils/misc';
 import { isSafariBrowser } from '@/utils/ua';
 import { RemoteFile } from '@/utils/file';
 import { createMokeRemoteSourceTransport } from '@/services/mokeRemoteSource';
+import { CLAIMED_DOWNLOAD_PATH } from '@/services/mokeHostLaunch';
+import { openMokeDownloadedEpub } from '@/services/mokeDownloadedEpub';
 import { detectViewTransitionGroup, detectViewTransitionsAPI } from '@/utils/viewTransition';
 import { isPWA } from './environment';
 import { BaseAppService } from './appService';
@@ -83,6 +85,7 @@ const indexedDBFileSystem: FileSystem = {
     return await this.getBlobURL(path, 'None');
   },
   async openFile(path: string, base: BaseDir, filename?: string) {
+    if (path === CLAIMED_DOWNLOAD_PATH) return openMokeDownloadedEpub();
     if (isValidURL(path)) {
       const transport = createMokeRemoteSourceTransport(path);
       return await new RemoteFile(path, filename, '', Date.now(), transport ?? undefined).open();

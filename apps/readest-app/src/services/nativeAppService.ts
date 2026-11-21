@@ -41,6 +41,8 @@ import { getOSPlatform, isContentURI, isFileURI, isValidURL } from '@/utils/misc
 import { getDirPath, getFilename } from '@/utils/path';
 import { NativeFile, RemoteFile } from '@/utils/file';
 import { createMokeRemoteSourceTransport } from '@/services/mokeRemoteSource';
+import { CLAIMED_DOWNLOAD_PATH } from '@/services/mokeHostLaunch';
+import { openMokeDownloadedEpub } from '@/services/mokeDownloadedEpub';
 import {
   copyURIToPath,
   getStorefrontRegionCode,
@@ -306,6 +308,7 @@ export const nativeFileSystem: FileSystem = {
     return this.getURL(path);
   },
   async openFile(path: string, base: BaseDir, name?: string) {
+    if (path === CLAIMED_DOWNLOAD_PATH) return openMokeDownloadedEpub();
     const normalizedPath = OS_TYPE === 'ios' ? safeDecodePath(path) : path;
     const { fp, baseDir } = this.resolvePath(normalizedPath, base);
     let fname = safeDecodePath(name || getFilename(fp));

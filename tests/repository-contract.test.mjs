@@ -38,6 +38,12 @@ test('publishes the versioned Moke reader contract', () => {
     },
   });
   assert.ok(contract.readerEvents.includes('reader:error'));
+  assert.deepEqual(contract.hostDownloadedEpub, {
+    resourceKind: 'downloaded-epub',
+    readCommand: 'moke_reader_download_read',
+    maxReadBytes: 1048576,
+    requiresHostLocalProgress: true,
+  });
   assert.ok(contract.nativeLibrary.registrationFunctions.includes('reader_invoke_handler'));
 });
 

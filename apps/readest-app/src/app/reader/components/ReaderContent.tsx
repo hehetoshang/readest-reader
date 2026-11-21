@@ -51,7 +51,7 @@ import LazyNotebook from './notebook/LazyNotebook';
 import LocalSendManager from '@/components/localsend/LocalSendManager';
 import BooksGrid from './BooksGrid';
 import { runTransientReaderBootstrap } from '../utils/transientReader';
-import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
+import { CLAIMED_DOWNLOAD_PATH, getMokeHostLaunch } from '@/services/mokeHostLaunch';
 
 // These dialogs pull in metadata, sync-provider, and AI integrations that are
 // not needed to paint or open a book. Keep them out of the cold-start path and
@@ -194,9 +194,12 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
 
     const mokeFiles = getMokeEmbeddedFiles();
     if (mokeOpenFilesRef.current === null) {
-      mokeOpenFilesRef.current = window.OPEN_WITH_FILES?.length
-        ? [...window.OPEN_WITH_FILES]
-        : mokeFiles;
+      const launch = getMokeHostLaunch();
+      mokeOpenFilesRef.current = launch
+        ? [launch.sourcePath]
+        : window.OPEN_WITH_FILES?.length
+          ? [...window.OPEN_WITH_FILES]
+          : mokeFiles;
     }
     const files = mokeOpenFilesRef.current;
     if (!files.length) return;
@@ -225,7 +228,10 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       // before the first NativeFile.open(). Explicitly grant that exact file
       // before importing it; this is a no-op on Android and harmless on
       // desktop, where the static AppData scope already covers the file.
-      if (!getMokeHostLaunch()) await appService.allowPathsInScopes?.(files, false);
+      if (!getMokeHostLaunch()) {
+        if (files.includes(CLAIMED_DOWNLOAD_PATH)) throw new Error('reader_invalid_launch');
+        await appService.allowPathsInScopes?.(files, false);
+      }
 
       // Load the real library from disk before building any transient entry, so
       // initViewState's getBookByHash can resolve the book and an empty-store

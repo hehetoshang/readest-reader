@@ -17,6 +17,21 @@ export interface ReaderReservation {
   epoch: number;
   lastSequence: number;
 }
+export interface OnlineEpubResource {
+  kind?: undefined;
+  url: string;
+  effectiveBaseUrl: string;
+  revision: string | null;
+  size: number;
+  etag: string;
+}
+
+interface DownloadedEpubResource {
+  kind: 'downloaded-epub';
+  fileVersion: string;
+  size: number;
+}
+
 export interface ReaderClaim extends ReaderReservation {
   schema: 'moke.readest.host-launch.v1';
   claimToken: string;
@@ -29,14 +44,12 @@ export interface ReaderClaim extends ReaderReservation {
     returnTarget: 'desktop-window' | 'mobile-library';
     restore: { id: string; position: Record<string, unknown> } | null;
   };
-  resource: {
-    url: string;
-    effectiveBaseUrl: string;
-    revision: string | null;
-    size: number;
-    etag: string;
-  };
+  resource: OnlineEpubResource | DownloadedEpubResource;
 }
+
+// Reader's in-memory open-file key. It never crosses the native IPC boundary.
+export const CLAIMED_DOWNLOAD_PATH = 'moke-download://claim/book.epub';
+export const MAX_DOWNLOAD_READ_BYTES = 1024 * 1024;
 
 const invalid = () => new Error('reader_invalid_launch');
 const uncertain = () => new Error('reader_launch_unknown');
@@ -105,17 +118,42 @@ export function validateReaderClaim(value: unknown, launchId: string): ReaderCla
     typeof source['entryRevision'] !== 'string' ||
     !source['entryRevision'] ||
     typeof source['libraryBaseUrl'] !== 'string' ||
+    !positive(resource['size'])
+  )
+    throw invalid();
+
+  const original = parseLibraryBaseUrl(source['libraryBaseUrl']);
+  if (original.baseUrl !== source['libraryBaseUrl']) throw invalid();
+  const localProgress = validateLocalProgress(value['localProgress'], value['bookId']);
+  const claim = { ...value, source: Object.freeze({ ...source }), localProgress };
+
+  if (resource['kind'] === 'downloaded-epub') {
+    if (
+      !localProgress?.accountId ||
+      resource['fileVersion'] !== localProgress.fileVersion ||
+      Object.keys(resource).some((key) => !['kind', 'fileVersion', 'size'].includes(key))
+    )
+      throw invalid();
+    return Object.freeze({
+      ...claim,
+      resource: Object.freeze({
+        kind: 'downloaded-epub',
+        size: resource['size'],
+        fileVersion: localProgress.fileVersion,
+      }),
+    }) as unknown as ReaderClaim;
+  }
+
+  if (
+    resource['kind'] !== undefined ||
     typeof resource['effectiveBaseUrl'] !== 'string' ||
     typeof resource['url'] !== 'string' ||
-    !positive(resource['size']) ||
     typeof resource['etag'] !== 'string' ||
     !/^[^\r\n]{1,256}$/.test(resource['etag'])
   )
     throw invalid();
-  const original = parseLibraryBaseUrl(source['libraryBaseUrl']);
   const effective = parseLibraryBaseUrl(resource['effectiveBaseUrl']);
   if (
-    original.baseUrl !== source['libraryBaseUrl'] ||
     effective.baseUrl !== resource['effectiveBaseUrl'] ||
     original.pathPrefix !== effective.pathPrefix ||
     !(
@@ -138,10 +176,8 @@ export function validateReaderClaim(value: unknown, launchId: string): ReaderCla
   if (resource['url'] !== expected) throw invalid();
   // Clone/freeze all authority fields. Callers cannot rewrite a claim after validation.
   return Object.freeze({
-    ...value,
-    source: Object.freeze({ ...source }),
+    ...claim,
     resource: Object.freeze({ ...resource }),
-    localProgress: validateLocalProgress(value['localProgress'], value['bookId']),
   }) as unknown as ReaderClaim;
 }
 
@@ -162,24 +198,29 @@ export class MokeHostLaunch {
   private unlisten?: () => void;
   private hinted = false;
   private canObserve = false;
-  private writes = new Set<Promise<unknown>>();
+  private pendingOperations = new Set<Promise<unknown>>();
 
   constructor(
     readonly claim: ReaderClaim,
     private invoke: ReaderInvoke,
     private listen: ReaderListen,
   ) {
+    const { resource } = claim;
     this.identity = JSON.stringify([
       claim.source.libraryBaseUrl,
       claim.localProgress?.accountId ?? null,
       claim.bookId,
       'epub',
-      claim.localProgress?.fileVersion ?? [
-        claim.resource.revision,
-        claim.resource.etag,
-        claim.resource.size,
-      ],
+      claim.localProgress?.fileVersion ??
+        (resource.kind === 'downloaded-epub'
+          ? resource.fileVersion
+          : [resource.revision, resource.etag, resource.size]),
     ]);
+  }
+
+  get sourcePath(): string {
+    const { resource } = this.claim;
+    return resource.kind === 'downloaded-epub' ? CLAIMED_DOWNLOAD_PATH : resource.url;
   }
 
   assertActive(): void {
@@ -197,12 +238,12 @@ export class MokeHostLaunch {
     this.unlisten?.();
     this.unlisten = undefined;
   };
-  trackWrite<T>(promise: Promise<T>): Promise<T> {
-    this.writes.add(promise);
+  trackOperation<T>(promise: Promise<T>): Promise<T> {
+    this.pendingOperations.add(promise);
     void promise.then(
-      () => this.writes.delete(promise),
+      () => this.pendingOperations.delete(promise),
       () => {
-        this.writes.delete(promise);
+        this.pendingOperations.delete(promise);
         this.markUnknown();
       },
     );
@@ -302,7 +343,8 @@ export class MokeHostLaunch {
   }
   resourceLifecycle(url: string, method: string) {
     this.assertActive();
-    if (url !== this.claim.resource.url || !['GET', 'HEAD'].includes(method)) throw invalid();
+    const { resource } = this.claim;
+    if (resource.kind || url !== resource.url || !['GET', 'HEAD'].includes(method)) throw invalid();
     let requestId: string | undefined;
     return {
       dispatch: async () => {
@@ -341,6 +383,48 @@ export class MokeHostLaunch {
       uncertain: this.markUnknown,
     };
   }
+  async readDownloadedRange(offset: number, length: number): Promise<ArrayBuffer> {
+    this.assertActive();
+    const { resource } = this.claim;
+    if (
+      resource.kind !== 'downloaded-epub' ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      !positive(length) ||
+      length > MAX_DOWNLOAD_READ_BYTES ||
+      offset > resource.size - length
+    )
+      throw invalid();
+
+    const read = async () => {
+      try {
+        const result = await this.invoke<unknown>('moke_reader_download_read', {
+          ...this.args(),
+          offset,
+          length,
+        });
+        if (result instanceof ArrayBuffer && result.byteLength === length) return result;
+        if (
+          Array.isArray(result) &&
+          result.length === length &&
+          result.every(
+            (byte: unknown) =>
+              typeof byte === 'number' && Number.isInteger(byte) && byte >= 0 && byte <= 255,
+          )
+        )
+          return Uint8Array.from(result).buffer;
+      } catch {
+        // Keep native paths and error details inside the host.
+      }
+      throw new Error('reader_download_unavailable');
+    };
+
+    const bytes = await this.trackOperation(read());
+    // Closing lets already dispatched reads finish without handing their bytes to the viewer.
+    this.assertActive();
+    return bytes;
+  }
+
   close(): Promise<void> {
     if (this.closingPromise) return this.closingPromise;
     if (this.state !== 'active') return Promise.reject(uncertain());
@@ -367,9 +451,9 @@ export class MokeHostLaunch {
         this.failClose = reject;
       });
       void terminal.catch(() => undefined);
-      // Local writes and accepted progress are drained before freezing the final sequence at the host.
+      // Local writes, download reads and accepted progress finish before observing native return.
       await this.queue;
-      await Promise.all([...this.writes]);
+      await Promise.all([...this.pendingOperations]);
       if (this.state === 'unknown') throw uncertain();
       for (const cancel of this.cancelRequests) cancel();
       this.canObserve = true;
@@ -455,7 +539,7 @@ export function bootstrapMokeHostLaunch(): Promise<MokeHostLaunch> {
     window.__MOKE_SOURCE_SERVER_URL = null;
     window.__MOKE_SERVER_URL = null;
     window.__MOKE_RESTORE_PROGRESS = null;
-    window.OPEN_WITH_FILES = [claim.resource.url];
+    window.OPEN_WITH_FILES = [currentLaunch.sourcePath];
     // Unavoidable document destruction invalidates this JS generation; it never acknowledges return.
     window.addEventListener('pagehide', () => currentLaunch?.markUnknown(), { once: true });
     return currentLaunch;

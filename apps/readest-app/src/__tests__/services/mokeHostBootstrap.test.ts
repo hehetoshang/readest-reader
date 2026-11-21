@@ -57,7 +57,7 @@ describe('controlled document bootstrap', () => {
     expect(fixture.invoke).toHaveBeenCalledWith('moke_reader_claim', {
       launchId: 'synthetic-launch',
     });
-    expect(window.OPEN_WITH_FILES).toEqual([launch.claim.resource.url]);
+    expect(window.OPEN_WITH_FILES).toEqual([launch.sourcePath]);
     expect(window.__MOKE_SERVER_URL).toBeNull();
     expect(window.__MOKE_RESTORE_PROGRESS).toBeNull();
     expect(fixture.directPost).not.toHaveBeenCalled();

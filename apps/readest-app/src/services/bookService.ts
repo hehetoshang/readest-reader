@@ -4,7 +4,7 @@ import {
   presentationConfig,
   restoreManagedConfig,
 } from './mokeProgressIdentity';
-import { getMokeHostLaunch } from './mokeHostLaunch';
+import { CLAIMED_DOWNLOAD_PATH, getMokeHostLaunch } from './mokeHostLaunch';
 import { FileSystem, AppPlatform, BaseDir, OsPlatform } from '@/types/system';
 import {
   Book,
@@ -463,6 +463,8 @@ export async function importBook(
     lookupIndex,
     osPlatform,
   } = options;
+  const claimedDownload = file === CLAIMED_DOWNLOAD_PATH;
+  if (claimedDownload && !transient) throw new Error('reader_invalid_launch');
   const isPseStream = typeof file === 'string' && isPseStreamFileName(file);
 
   let loadedBook: BookDoc | undefined;
@@ -571,6 +573,7 @@ export async function importBook(
       if (!loadedBook) {
         throw new Error('Unsupported or corrupted book file');
       }
+      if (claimedDownload && format !== 'EPUB') throw new Error('reader_download_unavailable');
       normalizeMetadataIsbn(loadedBook.metadata);
       const metadataTitle = formatTitle(loadedBook.metadata.title);
       if (!metadataTitle || !metadataTitle.trim() || metadataTitle === filename) {
@@ -856,7 +859,7 @@ export async function importBook(
       book.url = file as string;
       if (existingBook) existingBook.url = file as string;
     } else if (typeof file === 'string') {
-      if (isValidURL(file)) {
+      if (claimedDownload || isValidURL(file)) {
         book.url = file;
         if (existingBook) existingBook.url = file;
       } else if (transient || inPlace) {
@@ -1073,7 +1076,7 @@ export async function saveBookConfig(
     serializedConfig = serializeRawConfig(config);
   }
   const writing = fs.writeFile(getConfigFilename(book), 'Books', serializedConfig);
-  await (launch ? launch.trackWrite(writing) : writing);
+  await (launch ? launch.trackOperation(writing) : writing);
 }
 
 export async function loadBookNav(fs: FileSystem, book: Book): Promise<BookNav | null> {

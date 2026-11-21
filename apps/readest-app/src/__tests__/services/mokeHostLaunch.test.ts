@@ -41,7 +41,7 @@ describe('native Reader claim and complete original identity', () => {
       null,
       '42',
       'epub',
-      [claim.resource.revision, claim.resource.etag, claim.resource.size],
+      [original.resource.revision, original.resource.etag, original.resource.size],
     ]);
   });
   it('accepts the fixed legacy EPUB template from a native claim', () => {
@@ -57,8 +57,8 @@ describe('native Reader claim and complete original identity', () => {
           },
         },
         original.launchId,
-      ).resource.revision,
-    ).toBeNull();
+      ).resource,
+    ).toMatchObject({ revision: null });
   });
   it('rejects HTTPS changes on a non-default resource port', () => {
     const c = claimFixture('http://books.example:8080/a');
@@ -173,7 +173,7 @@ describe('host progress relay and drain', () => {
     const f = launchFixture(claim, invoke as ReaderInvoke);
     await f.launch.progress({ location: 'final' });
     const local = deferred<void>();
-    f.launch.trackWrite(local.promise);
+    f.launch.trackOperation(local.promise);
     let returned = false;
     const closing = f.launch.close().then(() => {
       returned = true;
@@ -238,7 +238,7 @@ describe('host progress relay and drain', () => {
     const invoke = vi.fn();
     const f = launchFixture(claimFixture(), invoke);
     const local = deferred<void>();
-    f.launch.trackWrite(local.promise);
+    f.launch.trackOperation(local.promise);
     const closing = f.launch.close();
     local.reject(new Error('storage unavailable'));
     await expect(closing).rejects.toThrow();
@@ -251,7 +251,7 @@ describe('host progress relay and drain', () => {
     expect(() =>
       launch.resourceLifecycle('http://books.example/b/api/book/42.epub', 'GET'),
     ).toThrow();
-    expect(() => launch.resourceLifecycle(launch.claim.resource.url, 'POST')).toThrow();
+    expect(() => launch.resourceLifecycle(launch.sourcePath, 'POST')).toThrow();
     expect(invoke).not.toHaveBeenCalled();
   });
 });

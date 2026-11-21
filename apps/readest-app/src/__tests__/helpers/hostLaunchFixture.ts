@@ -1,6 +1,7 @@
 import {
   MokeHostLaunch,
   validateReaderClaim,
+  type OnlineEpubResource,
   type ReaderClaim,
   type ReaderInvoke,
   type ReaderReservation,
@@ -9,7 +10,7 @@ import {
 export function claimFixture(
   base = 'http://books.example/a',
   localProgress?: ReaderClaim['localProgress'],
-): ReaderClaim {
+): ReaderClaim & { resource: OnlineEpubResource } {
   return validateReaderClaim(
     {
       schema: 'moke.readest.host-launch.v1',
@@ -34,7 +35,7 @@ export function claimFixture(
       },
     },
     'synthetic-launch',
-  );
+  ) as ReaderClaim & { resource: OnlineEpubResource };
 }
 
 export function localProgressFixture(
@@ -73,8 +74,23 @@ export function reservation(
   return { ...record, ...changes };
 }
 
+export function downloadedClaimFixture(
+  localProgress = localProgressFixture(),
+  size = 1000,
+): ReaderClaim {
+  const claim = claimFixture();
+  return validateReaderClaim(
+    {
+      ...claim,
+      localProgress,
+      resource: { kind: 'downloaded-epub', size, fileVersion: localProgress.fileVersion },
+    },
+    claim.launchId,
+  );
+}
+
 export function launchFixture(
-  claim = claimFixture(),
+  claim: ReaderClaim = claimFixture(),
   invoke: ReaderInvoke = async <T>() => undefined as T,
 ) {
   let handler: ((event: { payload: unknown }) => void) | undefined;

@@ -6,7 +6,7 @@ const PREFIX = 'moke-reader-progress-v2:';
 
 export function managedBookIdentity(sourceUrl: string): string | null {
   const launch = getMokeHostLaunch();
-  if (!launch || sourceUrl !== launch.claim.resource.url) return null;
+  if (!launch || sourceUrl !== launch.sourcePath) return null;
   launch.assertActive();
   return launch.identity;
 }

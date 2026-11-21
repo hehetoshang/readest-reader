@@ -138,7 +138,7 @@ export function validateMokeRemoteSource(
 
 export function isMokeRemoteSourceUrl(sourceUrl: string): boolean {
   const launch = getMokeHostLaunch();
-  if (launch) return launch.isActive() && sourceUrl === launch.claim.resource.url;
+  if (launch) return launch.isActive() && sourceUrl === launch.sourcePath;
   return false;
 }
 
@@ -254,13 +254,16 @@ export function createMokeRemoteSourceTransport(
   ) {
     throw new MokeRemoteSourceError('online.response_invalid');
   }
+  const resource = launch?.claim.resource;
+  if (resource?.kind === 'downloaded-epub')
+    throw new MokeRemoteSourceError('online.response_invalid');
   if (typeof window === 'undefined' || !window.__MOKE_EMBEDDED) return null;
-  const serverUrl = launch?.claim.resource.effectiveBaseUrl;
+  const serverUrl = resource?.effectiveBaseUrl;
   const bookId = launch?.claim.bookId;
   if (!serverUrl) return null;
   if (!bookId) throw new MokeRemoteSourceError('online.response_invalid');
   launch?.assertActive();
-  if (launch && sourceUrl !== launch.claim.resource.url)
+  if (resource && sourceUrl !== resource.url)
     throw new MokeRemoteSourceError('online.response_invalid');
 
   const context = validateMokeRemoteSource(sourceUrl, serverUrl, String(bookId));
@@ -275,8 +278,8 @@ export function createMokeRemoteSourceTransport(
     };
   }
   const activeControllers = new Map<AbortController, () => void>();
-  let expectedSize: number | null = launch?.claim.resource.size ?? null;
-  let expectedEtag: string | null = launch?.claim.resource.etag ?? null;
+  let expectedSize: number | null = resource?.size ?? null;
+  let expectedEtag: string | null = resource?.etag ?? null;
 
   const releaseAfterBody = (
     response: Response,

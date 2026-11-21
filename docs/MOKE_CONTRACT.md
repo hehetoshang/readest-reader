@@ -16,7 +16,7 @@ Claims cannot be mixed with external `file`, `ids`, `cfi`, book, server or resto
 
 ## Resource transport
 
-The claim seals one exact URL in either template:
+An online claim seals one exact URL in either template:
 
 - `{effectiveBaseUrl}/read/resource/{bookId}.epub?revision={revision}`
 - `{effectiveBaseUrl}/api/book/{bookId}.epub`
@@ -24,6 +24,8 @@ The claim seals one exact URL in either template:
 Every native HEAD/GET first calls `moke_reader_resource_dispatch`. The raw plugin HTTP adapter preserves Range headers, uses the shared cookie jar and disables redirects. It accepts no arbitrary URL, request body or credentials/header injection. HEAD and a real one-byte `206` probe check the sealed size/ETag; subsequent exact ranges validate URL, MIME, total size, ETag and body length. The fixed legacy route also permits `application/octet-stream`.
 
 Native EOF (including final bytes accompanying its EOF flag), or confirmed cancellation with outstanding native reads drained, precedes `moke_reader_resource_settle`. Reader awaits the original settle ACK. AbortController, a UI timeout, `finally`, lost IPC or document destruction cannot release occupancy. An unknown result disables further requests and progress mutations. Confirmed transient read failures retain bounded retry; retries wait for the prior native terminal state and ACK.
+
+A verified download uses the caller-bound [downloaded EPUB resource](HOST_LOCAL_PROGRESS.md#downloaded-epub-claims) and bounded native range reads. Its progress and return use the same host-local acknowledgements.
 
 Publication content remains in Foliate sandbox frames. TLS/cookie policy remains the embedding host's existing policy; this change adds no ACL grants.
 

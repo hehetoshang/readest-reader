@@ -31,6 +31,12 @@
       "drain": "moke_reader_closing"
     }
   },
+  "hostDownloadedEpub": {
+    "resourceKind": "downloaded-epub",
+    "readCommand": "moke_reader_download_read",
+    "maxReadBytes": 1048576,
+    "requiresHostLocalProgress": true
+  },
   "launchParameters": {
     "file": {
       "required": false,
