@@ -4,6 +4,7 @@ import { Book, BookConfig, BookNote } from '@/types/book';
 import { EnvConfigType } from '@/services/environment';
 import { BookDoc } from '@/libs/document';
 import { useLibraryStore } from './libraryStore';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 
 // Throttle library.json writes triggered by per-book saveConfig.
 //
@@ -145,7 +146,10 @@ export const useBookDataStore = create<BookDataState>((set, get) => ({
     config: BookConfig,
     settings: SystemSettings,
   ) => {
+    const launch = getMokeHostLaunch();
+    launch?.assertActive();
     const appService = await envConfig.getAppService();
+    launch?.assertActive();
     const { library, hashIndex, setLibrary } = useLibraryStore.getState();
     const hash = bookKey.split('-')[0]!;
     const idx = hashIndex.get(hash);

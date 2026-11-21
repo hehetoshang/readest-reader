@@ -1,0 +1,156 @@
+{
+  "id": "moke.readest.host-launch.fixtures.v1",
+  "contract": "moke.readest.host-launch.v1",
+  "description": "Synthetic semantic fixtures. Runtime authorization credentials are deliberately absent; these records cannot grant IPC authority.",
+  "sources": {
+    "a": { "savedServerId": "fixture-library-a", "entryRevision": "entry-a-1", "libraryBaseUrl": "http://books.example/a" },
+    "b": { "savedServerId": "fixture-library-b", "entryRevision": "entry-b-1", "libraryBaseUrl": "http://books.example/b" }
+  },
+  "progress": {
+    "schema": "moke.readest.progress.v1",
+    "reader": "readest",
+    "moke_book_id": "42",
+    "reader_book_id": "fixture-content-id",
+    "location": "epubcfi(/6/2!/4/2:0)",
+    "page": 3,
+    "total_pages": 10,
+    "fraction": 0.3,
+    "updated_at": "2026-01-01T00:00:00.000Z"
+  },
+  "cases": [
+    {
+      "name": "same-origin-prefixes-keep-distinct-progress",
+      "bookId": "42",
+      "sourceRefs": ["a", "b"],
+      "persistentKeys": ["[\"http://books.example/a\",\"42\"]", "[\"http://books.example/b\",\"42\"]"],
+      "expected": "different persistence and queue identities even for identical book bytes"
+    },
+    {
+      "name": "https-resource-upgrade-preserves-library-identity",
+      "sourceRef": "a",
+      "resource": {
+        "url": "https://books.example/a/read/resource/42.epub?revision=edition-1",
+        "effectiveBaseUrl": "https://books.example/a",
+        "revision": "edition-1",
+        "size": 4096,
+        "etag": "\"edition-1\""
+      },
+      "persistentKey": "[\"http://books.example/a\",\"42\"]",
+      "expected": "resource may use the permitted HTTPS upgrade while persistence retains the original HTTP base"
+    },
+    {
+      "name": "legacy-packaged-reader",
+      "capabilities": [],
+      "expected": "reader_unsupported",
+      "readerHttpRequests": 0,
+      "windowOpens": 0,
+      "navigations": 0
+    },
+    {
+      "name": "query-cannot-assert-capabilities",
+      "query": "mokeCapabilities=moke.readest.host-launch.v1",
+      "packagedReaderCapabilities": [],
+      "expected": "reader_unsupported"
+    },
+    {
+      "name": "host-and-reader-document-generations-are-separate",
+      "ownerDocumentGeneration": 17,
+      "documentGeneration": 1,
+      "expected": "source fence uses host generation 17; Reader caller fence and queue use target generation 1"
+    },
+    {
+      "name": "same-document-claim-is-idempotent",
+      "actualCaller": "same backend-bound Reader Webview and exact fixed document",
+      "documentGeneration": 1,
+      "expected": "same minimal context and same existing claim; no broader authority"
+    },
+    {
+      "name": "wrong-actual-reader-document",
+      "actualCaller": "unbound Webview or remote document",
+      "claimedLaunchId": "fixture-launch-a",
+      "expected": "reader_wrong_document"
+    },
+    {
+      "name": "old-entry-revision-after-preflight",
+      "sourceRef": "a",
+      "currentEntryRevision": "entry-a-2",
+      "expected": "entry_changed",
+      "windowOpens": 0
+    },
+    {
+      "name": "progress-book-mismatch",
+      "reservedBookId": "42",
+      "payloadBookId": "43",
+      "expected": "reader_progress_invalid"
+    },
+    {
+      "name": "same-library-new-launch",
+      "sourceRef": "a",
+      "bookId": "42",
+      "launchIds": ["fixture-launch-a", "fixture-launch-a-next"],
+      "expected": "same persistent identity and separate runtime queues"
+    },
+    {
+      "name": "resource-dispatch-is-single-book-and-read-only",
+      "sealedUrl": "https://books.example/a/read/resource/42.epub?revision=edition-1",
+      "acceptedMethods": ["GET", "HEAD"],
+      "rejectedRequests": [
+        { "url": "https://books.example/b/read/resource/42.epub?revision=edition-1", "method": "GET" },
+        { "url": "https://books.example/a/read/resource/43.epub?revision=edition-1", "method": "GET" },
+        { "url": "https://books.example/a/read/resource/42.epub?revision=edition-1", "method": "POST" }
+      ],
+      "expected": "only the exact sealed URL and read-only methods can reserve a Reader resource ticket"
+    },
+    {
+      "name": "abort-or-destroy-is-not-resource-settle",
+      "existingHttpTickets": 1,
+      "observed": "AbortController.abort() or JavaScript document destruction without confirmed transport terminal state and settle ACK",
+      "expected": "ticket remains pending and source remains occupied"
+    },
+    {
+      "name": "closing-waits-for-trailing-and-http",
+      "trailingAcknowledged": true,
+      "local": "complete",
+      "remote": "pending",
+      "existingHttpTickets": 1,
+      "expected": "closing pending; no source release"
+    },
+    {
+      "name": "normal-closing-observes-authoritative-terminal-result",
+      "lastSequence": 2,
+      "trailingAcknowledged": true,
+      "local": "complete",
+      "remote": "complete",
+      "existingHttpTickets": 0,
+      "nativeHint": { "event": "moke:reader-drain-ready", "launchId": "fixture-launch-a", "lastSequence": 2 },
+      "nextControlCall": "same actual Reader document, same claim, closing(lastSequence=2)",
+      "expectedPhase": "returned",
+      "expectedCompletion": "complete"
+    },
+    {
+      "name": "drain-ready-hint-does-not-release-a-source",
+      "nativeHint": { "event": "moke:reader-drain-ready", "launchId": "fixture-launch-a", "lastSequence": 2 },
+      "authoritativeClosingResult": "not observed",
+      "expected": "keep occupancy until the actual same-document closing call returns a terminal reservation"
+    },
+    {
+      "name": "lost-save-response",
+      "trailingAcknowledged": true,
+      "local": "complete",
+      "remote": "unknown",
+      "expected": "unknown; no mutation replay and no source release"
+    },
+    {
+      "name": "destroyed-reader-is-not-returned",
+      "nativeEvent": "destroyed",
+      "expectedPhase": "revoked",
+      "expectedCompletion": "unknown"
+    },
+    {
+      "name": "unknown-offline-provenance",
+      "offlineLibraryBaseUrl": "",
+      "currentSourceRef": "a",
+      "expected": "preserve originals without restore or migration into a"
+    }
+  ]
+}

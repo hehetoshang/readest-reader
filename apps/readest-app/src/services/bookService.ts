@@ -1,4 +1,10 @@
 import { SystemSettings } from '@/types/settings';
+import {
+  managedBookFields,
+  presentationConfig,
+  restoreManagedConfig,
+} from './mokeProgressIdentity';
+import { getMokeHostLaunch } from './mokeHostLaunch';
 import { FileSystem, AppPlatform, BaseDir, OsPlatform } from '@/types/system';
 import {
   Book,
@@ -571,14 +577,21 @@ export async function importBook(
         loadedBook.metadata.title = getBaseFilename(filename);
       }
     } catch (error) {
-      throw new Error(`Failed to open the book file: ${(error as Error).message || error}`, { cause: error });
+      throw new Error(`Failed to open the book file: ${(error as Error).message || error}`, {
+        cause: error,
+      });
     }
 
-    const hash = isPseStream
+    const contentHash = isPseStream
       ? md5(file as string)
       : usedNativeParser
         ? nativeHash!
         : await partialMD5(fileobj!);
+    const managedFields =
+      typeof file === 'string' ? managedBookFields(file, contentHash) : { hash: contentHash };
+    // Reader stores and view keys split IDs on '-'. A deterministic hex ID keeps
+    // those conventions while separating equal bytes from different libraries.
+    const { hash } = managedFields;
 
     // PDF metadata is often generic boilerplate (e.g. every PowerPoint export
     // is titled "PowerPoint Presentation" by the same author), so metadata
@@ -629,7 +642,7 @@ export async function importBook(
 
     const primaryLanguage = getPrimaryLanguage(loadedBook.metadata.language);
     const book: Book = {
-      hash,
+      ...managedFields,
       format,
       metaHash,
       title: formatTitle(loadedBook.metadata.title),
@@ -657,6 +670,7 @@ export async function importBook(
         if (series.total) book.metadata.seriesTotal = parseInt(series.total, 10);
       }
     }
+    if (existingBook && 'mokeIdentity' in managedFields) Object.assign(existingBook, managedFields);
     // update book metadata when reimporting the same book
     if (existingBook && metaHashMatch) {
       // MetaHash match (different file, same book): override metadata and hash
@@ -1009,8 +1023,31 @@ export async function loadBookConfig(
     if (await fs.exists(getConfigFilename(book), 'Books')) {
       str = (await fs.readFile(getConfigFilename(book), 'Books', 'text')) as string;
     }
-    return deserializeConfig(str, globalViewSettings, DEFAULT_BOOK_SEARCH_CONFIG);
-  } catch {
+    let config = deserializeConfig(str, globalViewSettings, DEFAULT_BOOK_SEARCH_CONFIG);
+    if (book.mokeIdentity && book.mokeContentHash) {
+      const originalBook = { ...book, hash: book.mokeContentHash };
+      let presentation: Partial<BookConfig> = {};
+      if (await fs.exists(getConfigFilename(originalBook), 'Books')) {
+        const raw = (await fs.readFile(getConfigFilename(originalBook), 'Books', 'text')) as string;
+        presentation = presentationConfig(
+          deserializeConfig(raw, globalViewSettings, DEFAULT_BOOK_SEARCH_CONFIG),
+        );
+      }
+      const scoped = JSON.parse(str) as Partial<BookConfig>;
+      config = {
+        ...presentation,
+        ...config,
+        viewSettings: {
+          ...globalViewSettings,
+          ...presentation.viewSettings,
+          ...scoped.viewSettings,
+        },
+      };
+      config = restoreManagedConfig(book, config);
+    }
+    return config;
+  } catch (error) {
+    if (book.mokeIdentity) throw error;
     return deserializeConfig('{}', globalViewSettings, DEFAULT_BOOK_SEARCH_CONFIG);
   }
 }
@@ -1021,6 +1058,10 @@ export async function saveBookConfig(
   config: BookConfig,
   settings?: SystemSettings,
 ): Promise<void> {
+  const launch = book.mokeIdentity ? getMokeHostLaunch() : null;
+  if (book.mokeIdentity && (!launch || launch.identity !== book.mokeIdentity))
+    throw new Error('reader_invalid_launch');
+  launch?.assertActive();
   let serializedConfig: string;
   if (settings) {
     const globalViewSettings = {
@@ -1031,7 +1072,8 @@ export async function saveBookConfig(
   } else {
     serializedConfig = serializeRawConfig(config);
   }
-  await fs.writeFile(getConfigFilename(book), 'Books', serializedConfig);
+  const writing = fs.writeFile(getConfigFilename(book), 'Books', serializedConfig);
+  await (launch ? launch.trackWrite(writing) : writing);
 }
 
 export async function loadBookNav(fs: FileSystem, book: Book): Promise<BookNav | null> {

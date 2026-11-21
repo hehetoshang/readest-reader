@@ -207,6 +207,7 @@ const FoliateViewer: React.FC<{
     mokeNavigation: MokeAnnotationNavigationContext | null;
   } | null>(null);
   const relocateRafRef = useRef<number | null>(null);
+  const closingRelocateRef = useRef(false);
   const cancelRelocateScheduled = useCallback(() => {
     const id = relocateRafRef.current;
     if (id == null) return;
@@ -238,6 +239,7 @@ const FoliateViewer: React.FC<{
   }, [bookKey, setProgress]);
 
   const progressRelocateHandler = (event: Event) => {
+    if (closingRelocateRef.current) return;
     // Always stash the latest detail; if another rAF is already pending
     // it'll pick this up and the intermediate states are skipped.
     pendingRelocateRef.current = {
@@ -263,11 +265,19 @@ const FoliateViewer: React.FC<{
   };
 
   useEffect(() => {
+    const flushForClose = (event: CustomEvent) => {
+      if (event.detail?.bookKey !== bookKey) return;
+      closingRelocateRef.current = true;
+      cancelRelocateScheduled();
+      commitRelocate();
+    };
+    eventDispatcher.on('flush-reader-relocate', flushForClose);
     // On unmount: flush any pending commit synchronously before tearing
     // down — otherwise the last page-turn before the user closes the
     // book could be lost. Then cancel the scheduled handle to be safe
     // against double-fire.
     return () => {
+      eventDispatcher.off('flush-reader-relocate', flushForClose);
       if (pendingRelocateRef.current) {
         try {
           commitRelocate();

@@ -51,6 +51,7 @@ import LazyNotebook from './notebook/LazyNotebook';
 import LocalSendManager from '@/components/localsend/LocalSendManager';
 import BooksGrid from './BooksGrid';
 import { runTransientReaderBootstrap } from '../utils/transientReader';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 
 // These dialogs pull in metadata, sync-provider, and AI integrations that are
 // not needed to paint or open a book. Keep them out of the cold-start path and
@@ -224,7 +225,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       // before the first NativeFile.open(). Explicitly grant that exact file
       // before importing it; this is a no-op on Android and harmless on
       // desktop, where the static AppData scope already covers the file.
-      await appService.allowPathsInScopes?.(files, false);
+      if (!getMokeHostLaunch()) await appService.allowPathsInScopes?.(files, false);
 
       // Load the real library from disk before building any transient entry, so
       // initViewState's getBookByHash can resolve the book and an empty-store
@@ -423,6 +424,10 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     console.log('Closing book', bookKey);
 
     const viewState = getViewState(bookKey);
+    if (getMokeHostLaunch()) {
+      await eventDispatcher.dispatch('flush-reader-relocate', { bookKey });
+      await eventDispatcher.dispatch('stop-reader-autosave', { bookKey });
+    }
     if (viewState?.isPrimary && appService?.isDesktopApp) {
       await clearDiscordPresence(appService);
     }
@@ -444,7 +449,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
 
     // Notify host (Moke): book closed. Must be awaited so the event
     // reaches the Rust backend before the window is destroyed.
-    if (viewState?.isPrimary) {
+    if (viewState?.isPrimary && !getMokeHostLaunch()) {
       await emitReaderEvent('book:closed', {
         book_id: bookKey.split('-')[0],
         view_key: bookKey,
@@ -495,6 +500,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
         bookKeys.map(async (bookKey) => saveConfigAndCloseBook(bookKey, keepTTSAlive === true)),
       );
       await saveSettings(envConfig, settings);
+      if (getMokeHostLaunch()) await emitReaderEvent('book:closed', {});
     })();
     closingBooksRef.current = { bookKeys: key, promise };
     return promise;
@@ -521,10 +527,16 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   };
 
   const handleCloseBook = async (bookKey: string) => {
+    if (getMokeHostLaunch()) {
+      // One claimed document owns one book. Drain every pane and local save
+      // through the same close promise before the native window may leave.
+      await handleCloseBooksToLibrary();
+      return;
+    }
     // Header X / pane close: an SPA-side close on web and the main window.
     // The Tauri reader-window branches below destroy their webview, which
     // takes the per-window TTS with it either way.
-    saveConfigAndCloseBook(bookKey, true);
+    await saveConfigAndCloseBook(bookKey, true);
     if (sideBarBookKey === bookKey) {
       setSideBarBookKey(getNextBookKey(sideBarBookKey));
     }
@@ -551,7 +563,11 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     try {
       // Only failed/empty-reader recovery has a deadline. Normal reading
       // still waits for progress persistence before leaving the document.
-      await closeReaderAndNavigateBack(() => handleCloseBooks(), () => navigateBackToLibrary(true), 1500);
+      await closeReaderAndNavigateBack(
+        () => handleCloseBooks(),
+        () => navigateBackToLibrary(true),
+        1500,
+      );
     } catch (error) {
       // A book that never opened may have no configuration to save. Its
       // best-effort cleanup must not strand the user on the error screen.
@@ -608,10 +624,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
             >
               {_('Retry')}
             </button>
-            <button
-              className='btn btn-outline'
-              onClick={handleRecoverToLibrary}
-            >
+            <button className='btn btn-outline' onClick={handleRecoverToLibrary}>
               {_('Go Back')} · {_('Download')}
             </button>
           </div>
