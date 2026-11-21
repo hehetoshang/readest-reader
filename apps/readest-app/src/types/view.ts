@@ -54,7 +54,11 @@ export interface Renderer extends HTMLElement {
     listener: EventListener,
     option?: AddEventListenerOptions,
   ) => void;
-  removeEventListener: (type: string, listener: EventListener) => void;
+  removeEventListener: (
+    type: string,
+    listener: EventListener,
+    option?: EventListenerOptions,
+  ) => void;
   showLoupe?: (
     x: number,
     y: number,
@@ -75,11 +79,12 @@ export interface Renderer extends HTMLElement {
 }
 
 export interface FoliateView extends HTMLElement {
+  readonly hasUserNavigation?: boolean;
   open: (book: BookDoc) => Promise<void>;
   close: () => void;
   init: (options: { lastLocation: string }) => void;
   goTo: (target: string | number) => void;
-  goToFraction: (fraction: number) => void;
+  goToFraction: (fraction: number, options?: { initial?: boolean }) => void;
   getSectionFractions: () => number[];
   prev: (distance?: number) => void;
   next: (distance?: number) => void;
@@ -133,6 +138,73 @@ export interface FoliateView extends HTMLElement {
 }
 
 export const wrappedFoliateView = (originalView: FoliateView): FoliateView => {
+  let initialization: Promise<void> | undefined;
+  let initializing = false;
+  let hasUserNavigation = false;
+  Object.defineProperty(originalView, 'hasUserNavigation', { get: () => hasUserNavigation });
+  const readingAction = () => {
+    if (!initializing) hasUserNavigation = true;
+    originalView.dispatchEvent(new Event('reading-action'));
+  };
+  let navigation: Promise<unknown> = Promise.resolve();
+  const lifetime = new AbortController();
+  const canceled = new Promise<void>((resolve) =>
+    lifetime.signal.addEventListener('abort', () => resolve(), { once: true }),
+  );
+  // One renderer must finish loading a document before the next operation can
+  // replace it. Recover the queue after errors, while returning each caller's
+  // own completion (or close cancellation).
+  const enqueue = (action: () => void | Promise<void>) => {
+    const pending = navigation.then(async () => {
+      if (lifetime.signal.aborted) return;
+      originalView.dispatchEvent(new Event('reading-action'));
+      return action();
+    });
+    navigation = pending.catch(() => undefined);
+    return Promise.race([pending, canceled]);
+  };
+  const close = originalView.close.bind(originalView);
+  originalView.close = () => {
+    lifetime.abort();
+    originalView.dispatchEvent(new Event('reading-close'));
+    close();
+  };
+  const initialize = originalView.init.bind(originalView);
+  originalView.init = (options) => {
+    let pending: Promise<void>;
+    initializing = true;
+    try {
+      pending = Promise.resolve(initialize(options));
+    } finally {
+      initializing = false;
+    }
+    initialization = pending;
+    navigation = pending.catch(() => undefined);
+    return pending.finally(() => {
+      if (initialization === pending) initialization = undefined;
+    });
+  };
+  // Notify pending cold restoration before a turn's animation starts. Waiting
+  // for relocate would let a font completion reapply the old location mid-turn.
+  for (const method of ['next', 'prev'] as const) {
+    const navigate = originalView[method].bind(originalView);
+    originalView[method] = (distance?: number) => {
+      readingAction();
+      return enqueue(() => navigate(distance));
+    };
+  }
+  const goToFraction = originalView.goToFraction.bind(originalView);
+  originalView.goToFraction = (fraction, options) => {
+    if (!options?.initial) readingAction();
+    return enqueue(() => goToFraction(fraction));
+  };
+  for (const method of ['back', 'forward'] as const) {
+    const navigate = originalView.history[method].bind(originalView.history);
+    originalView.history[method] = () => {
+      readingAction();
+      return navigate();
+    };
+  }
   const originalAddAnnotation = originalView.addAnnotation.bind(originalView);
   originalView.addAnnotation = (note: BookNote, remove = false) => {
     // transform BookNote to foliate annotation
@@ -151,8 +223,15 @@ export const wrappedFoliateView = (originalView: FoliateView): FoliateView => {
   originalView.goTo = (target: string | number): Promise<void> => {
     // Cross-section jumps can take seconds (the target section's images block
     // its iframe load); surface start/end so the viewer can show a spinner.
-    originalView.dispatchEvent(new CustomEvent('navigate-start'));
-    return Promise.resolve(originalGoTo(target)).finally(() => {
+    const accepted = originalView.dispatchEvent(
+      new CustomEvent('navigate-start', { detail: { target }, cancelable: true }),
+    );
+    if (accepted) hasUserNavigation = true;
+    // Recreating the same iframe before its load resolves strands init. A
+    // repeated host restore is canceled by the pending initial-location owner;
+    // a new jump waits for that first document before taking over.
+    const pending = accepted ? enqueue(() => originalGoTo(target)) : undefined;
+    return Promise.resolve(pending).finally(() => {
       originalView.dispatchEvent(new CustomEvent('navigate-end'));
     });
   };

@@ -11,6 +11,7 @@ import { debounce } from '@/utils/debounce';
 import { eventDispatcher } from '@/utils/event';
 import type { BookNote } from '@/types/book';
 import { FileSyncEngine } from '@/services/sync/file/engine';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 import { FileSyncError } from '@/services/sync/file/provider';
 import { createAppLocalStore } from '@/services/sync/file/appLocalStore';
 import {
@@ -110,7 +111,8 @@ export const useFileSync = (bookKey: string) => {
   // Readest Cloud's native progress sync is useProgressSync's job, not this
   // hook's, and runs independently.
   const activeKinds = useMemo(
-    () => getActiveFileSyncBackends(settings, userProfilePlan ?? 'free'),
+    () =>
+      getMokeHostLaunch() ? [] : getActiveFileSyncBackends(settings, userProfilePlan ?? 'free'),
     [settings, userProfilePlan],
   );
 

@@ -237,6 +237,16 @@ export function useMokeCommandListener(bookKeys: string[]) {
         if (!key || !useReaderStore.getState().getView(key)) {
           throw new Error('No active reader view');
         }
+        // This is the one-shot launch restore, not a new host/user command.
+        // A jump or turn accepted while init was pending already owns the
+        // location; appending the old restore would otherwise undo it.
+        if (useReaderStore.getState().getView(key)?.hasUserNavigation) {
+          restoredRef.current = true;
+          if (timer) window.clearTimeout(timer);
+          timer = null;
+          reportResultSafe(true, { restored: false, reason: 'superseded-by-reading-action' });
+          return;
+        }
         restoring = true;
         beginMokeAnnotationNavigation();
         const result = executeCommand(command, bookKeysRef.current);

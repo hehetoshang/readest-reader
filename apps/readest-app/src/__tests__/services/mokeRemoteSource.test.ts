@@ -8,10 +8,33 @@ import {
   MOKE_REMOTE_SOURCE_FAILED,
 } from '@/services/mokeRemoteSource';
 import { eventDispatcher } from '@/utils/event';
+import { MokeHostLaunch, type ReaderClaim } from '@/services/mokeHostLaunch';
+import { claimFixture } from '../helpers/hostLaunchFixture';
+
+const fixture = vi.hoisted(() => ({ launch: null as MokeHostLaunch | null }));
+vi.mock('@/services/mokeHostLaunch', async (original) => ({
+  ...(await original<typeof import('@/services/mokeHostLaunch')>()),
+  getMokeHostLaunch: () => fixture.launch,
+}));
 
 const SERVER = 'https://books.example';
 const SOURCE = `${SERVER}/read/resource/42.epub?revision=abc-123`;
 const LEGACY_SOURCE = `${SERVER}/api/book/42.epub`;
+
+function authorize(url = SOURCE, size = 1000, etag = '"one"') {
+  const c = claimFixture(SERVER);
+  const claim: ReaderClaim = {
+    ...c,
+    resource: {
+      ...c.resource,
+      url,
+      size,
+      etag,
+      revision: new URL(url).searchParams.get('revision'),
+    },
+  };
+  fixture.launch = new MokeHostLaunch(claim, vi.fn(), async () => () => {});
+}
 
 function response(
   status: number,
@@ -26,12 +49,14 @@ function response(
 }
 
 beforeEach(() => {
+  authorize();
   window.__MOKE_EMBEDDED = true;
   window.__MOKE_SOURCE_SERVER_URL = SERVER;
   window.__MOKE_BOOK_ID = '42';
 });
 
 afterEach(() => {
+  fixture.launch = null;
   vi.useRealTimers();
   window.__MOKE_EMBEDDED = false;
   window.__MOKE_SOURCE_SERVER_URL = null;
@@ -40,6 +65,7 @@ afterEach(() => {
 });
 
 it('reports a stalled chapter body after all retries and cancels its transport', async () => {
+  authorize(SOURCE, 3000000);
   vi.useFakeTimers();
   const failed = vi.fn();
   eventDispatcher.on(MOKE_REMOTE_SOURCE_FAILED, failed);
@@ -48,19 +74,27 @@ it('reports a stalled chapter body after all retries and cancels its transport',
   const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
     if (init?.method === 'HEAD') return response(405, {});
     const probe = new Headers(init?.headers).get('range') === 'bytes=0-0';
-    const result = response(206, {
-      'content-type': 'application/epub+zip',
-      'content-length': probe ? '1' : '65536',
-      'content-range': probe ? 'bytes 0-0/3000000' : 'bytes 2480102-2545637/3000000',
-      etag: '"one"',
-    }, new Uint8Array([0]));
+    const result = response(
+      206,
+      {
+        'content-type': 'application/epub+zip',
+        'content-length': probe ? '1' : '65536',
+        'content-range': probe ? 'bytes 0-0/3000000' : 'bytes 2480102-2545637/3000000',
+        etag: '"one"',
+      },
+      new Uint8Array([0]),
+    );
     if (!probe) {
       signals.push(init!.signal!);
       Object.defineProperty(result, 'arrayBuffer', {
         configurable: true,
         value: () => {
           bodyReads++;
-          return new Promise<ArrayBuffer>(() => {});
+          return new Promise<ArrayBuffer>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), {
+              once: true,
+            });
+          });
         },
       });
     }
@@ -97,7 +131,15 @@ it('does not show an error when a reader is closed during a pending range', asyn
   eventDispatcher.on(MOKE_REMOTE_SOURCE_FAILED, failed);
   const transport = createMokeRemoteSourceTransport(
     SOURCE,
-    () => new Promise<Response>(() => {}),
+    (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        if (init?.signal?.aborted) reject(new DOMException('aborted', 'AbortError'));
+        init?.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('aborted', 'AbortError')),
+          { once: true },
+        );
+      }),
   )!;
   try {
     const pending = transport.fetch(SOURCE, { method: 'HEAD' });
@@ -137,7 +179,7 @@ describe('Moke online source authorization', () => {
   });
 
   it('canonicalizes equivalent persisted server origins before authorizing the source', () => {
-    for (const serverUrl of [`${SERVER}/`, `${SERVER}///`, ' HTTPS://BOOKS.EXAMPLE:443/ ']) {
+    for (const serverUrl of [`${SERVER}/`, 'HTTPS://BOOKS.EXAMPLE:443/']) {
       expect(validateMokeRemoteSource(LEGACY_SOURCE, serverUrl, ' 42 ')).toEqual({
         url: LEGACY_SOURCE,
         mime: 'application/epub+zip',
@@ -147,6 +189,8 @@ describe('Moke online source authorization', () => {
 
     for (const invalidServerUrl of [
       `${SERVER}/library`,
+      `${SERVER}///`,
+      ' HTTPS://BOOKS.EXAMPLE:443/ ',
       `${SERVER}?next=/library`,
       `${SERVER}#library`,
       'ftp://books.example',
@@ -159,6 +203,7 @@ describe('Moke online source authorization', () => {
   });
 
   it('proves the GET contract and accepts exact 206 reads without buffering a full response', async () => {
+    authorize(SOURCE, 1000, '"revision-one"');
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -209,6 +254,7 @@ describe('Moke online source authorization', () => {
   });
 
   it("accepts Talebook Android's legacy EPUB route only after an octet-stream 206 probe", async () => {
+    authorize(LEGACY_SOURCE, 1000, '"legacy-one"');
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -365,6 +411,7 @@ describe('Moke online source authorization', () => {
   });
 
   it('uses a valid 206 probe when HEAD is unsupported and clamps EOF prefetches', async () => {
+    authorize(SOURCE, 8);
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(response(405, { 'content-type': 'text/plain' }))

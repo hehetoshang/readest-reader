@@ -7,6 +7,8 @@ const { zipSync } = createRequire(import.meta.url)('fflate') as typeof import('f
 import { DocumentLoader } from '@/libs/document';
 import { RemoteFile } from '@/utils/file';
 import { getInitialReaderLocation } from '@/app/reader/utils/transientReader';
+import { MokeHostLaunch } from '@/services/mokeHostLaunch';
+import { claimFixture } from '../helpers/hostLaunchFixture';
 import {
   createMokeRemoteSourceTransport,
   MokeRemoteSourceError,
@@ -15,6 +17,28 @@ import {
 
 const SERVER = 'https://books.example';
 const SOURCE = `${SERVER}/api/book/42.epub`;
+const hostFixture = vi.hoisted(() => ({ launch: null as MokeHostLaunch | null }));
+vi.mock('@/services/mokeHostLaunch', async (original) => ({
+  ...(await original<typeof import('@/services/mokeHostLaunch')>()),
+  getMokeHostLaunch: () => hostFixture.launch,
+}));
+function authorize(base: string, size: number) {
+  const claim = claimFixture(base);
+  hostFixture.launch = new MokeHostLaunch(
+    {
+      ...claim,
+      resource: {
+        ...claim.resource,
+        url: `${base}/api/book/42.epub`,
+        revision: null,
+        size,
+        etag: '"stable"',
+      },
+    },
+    vi.fn(),
+    vi.fn(),
+  );
+}
 
 function fixture(ncx: boolean, largeCover = false) {
   // fflate can live in Node's realm while Vitest uses jsdom's typed arrays.
@@ -42,7 +66,13 @@ function fixture(ncx: boolean, largeCover = false) {
       'OEBPS/two.xhtml': text(
         '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="two">Second chapter content</h1></body></html>',
       ),
-      ...(largeCover ? { 'OEBPS/cover.xhtml': text('<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="unread-media"/></body></html>') } : {}),
+      ...(largeCover
+        ? {
+            'OEBPS/cover.xhtml': text(
+              '<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="unread-media"/></body></html>',
+            ),
+          }
+        : {}),
       [largeCover ? 'OEBPS/unread-media' : 'unread-media']: new ZipBytes(2 * 1024 * 1024),
     },
     { level: 0 },
@@ -50,6 +80,7 @@ function fixture(ncx: boolean, largeCover = false) {
 }
 
 function server(bytes: Uint8Array, fail?: (start: number, end: number) => boolean) {
+  authorize(SERVER, bytes.length);
   const reads: Array<[number, number]> = [];
   const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
     let result: Response;
@@ -86,6 +117,7 @@ beforeEach(() => {
   window.__MOKE_BOOK_ID = '42';
 });
 afterEach(() => {
+  hostFixture.launch = null;
   window.__MOKE_EMBEDDED = false;
   vi.useRealTimers();
 });
@@ -94,7 +126,11 @@ describe('real ZIP / EPUB parser over the online Range transport', () => {
   it('opens text ahead of a multi-megabyte cover without fetching the cover', async () => {
     const bytes = fixture(true, true);
     const endpoint = server(bytes);
-    const file = await new RemoteFile(SOURCE, 'book.epub', '', Date.now(),
+    const file = await new RemoteFile(
+      SOURCE,
+      'book.epub',
+      '',
+      Date.now(),
       createMokeRemoteSourceTransport(SOURCE, endpoint.fetch)!,
     ).open();
     try {
@@ -130,6 +166,7 @@ describe('real ZIP / EPUB parser over the online Range transport', () => {
     const origin = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;
     const source = `${origin}/api/book/42.epub`;
     window.__MOKE_SOURCE_SERVER_URL = origin;
+    authorize(origin, bytes.length);
     let file: RemoteFile | undefined;
     try {
       file = await new RemoteFile(

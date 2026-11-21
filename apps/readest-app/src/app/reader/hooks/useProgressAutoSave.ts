@@ -5,6 +5,8 @@ import { useReaderStore } from '@/store/readerStore';
 import { useBookProgress } from '@/store/readerProgressStore';
 import { useSettingsStore } from '@/store/settingsStore';
 import { debounce } from '@/utils/debounce';
+import { eventDispatcher } from '@/utils/event';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 
 export const useProgressAutoSave = (bookKey: string) => {
   const { envConfig } = useEnv();
@@ -22,11 +24,16 @@ export const useProgressAutoSave = (bookKey: string) => {
   // overwrites the server's progress with the stale local one (issue #4222).
   const lastSavedLocationRef = useRef<string | null>(null);
   const initializedRef = useRef(false);
+  const stoppedRef = useRef(false);
+  const delayRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const writesRef = useRef(new Set<Promise<void>>());
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const saveBookConfig = useCallback(
     debounce(() => {
-      setTimeout(async () => {
+      delayRef.current = setTimeout(async () => {
+        delayRef.current = null;
+        if (stoppedRef.current) return;
         // Skip while previewing a deep-link target — the user's actual
         // last-read position should not be overwritten by a transient view.
         if (useReaderStore.getState().getViewState(bookKey)?.previewMode) return;
@@ -40,14 +47,30 @@ export const useProgressAutoSave = (bookKey: string) => {
         }
         if (currentLocation === lastSavedLocationRef.current) return;
         const settings = useSettingsStore.getState().settings;
-        await saveConfig(envConfig, bookKey, config, settings);
-        lastSavedLocationRef.current = currentLocation;
+        const writing = saveConfig(envConfig, bookKey, config, settings);
+        writesRef.current.add(writing);
+        try {
+          await writing;
+          lastSavedLocationRef.current = currentLocation;
+        } catch {
+          getMokeHostLaunch()?.markUnknown();
+        } finally {
+          writesRef.current.delete(writing);
+        }
       }, 500);
     }, 1000),
     [],
   );
 
   useEffect(() => {
+    const stop = async (event: CustomEvent) => {
+      if (event.detail?.bookKey !== bookKey) return;
+      stoppedRef.current = true;
+      saveBookConfig.cancel();
+      if (delayRef.current) clearTimeout(delayRef.current);
+      await Promise.all([...writesRef.current]);
+    };
+    eventDispatcher.on('stop-reader-autosave', stop);
     // Snapshot the loaded-from-disk location before any progress events fire,
     // so we don't treat the initial relocate as a user-driven change.
     if (!initializedRef.current) {
@@ -58,9 +81,11 @@ export const useProgressAutoSave = (bookKey: string) => {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => eventDispatcher.off('stop-reader-autosave', stop);
   }, [bookKey]);
 
   useEffect(() => {
+    if (stoppedRef.current || (getMokeHostLaunch() && !getMokeHostLaunch()?.isActive())) return;
     saveBookConfig();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [progress, bookKey]);
@@ -72,6 +97,8 @@ export const useProgressAutoSave = (bookKey: string) => {
   // library-level rollup.
   useEffect(() => {
     return () => {
+      saveBookConfig.cancel();
+      if (delayRef.current) clearTimeout(delayRef.current);
       flushPendingLibrarySave().catch(() => {
         // Best-effort on teardown — failures fall through to next launch's
         // reconstruction from per-book config.json files.

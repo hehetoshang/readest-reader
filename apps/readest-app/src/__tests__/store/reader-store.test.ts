@@ -2,6 +2,17 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import type { FoliateView } from '@/types/view';
 import type { Insets } from '@/types/misc';
 import type { Book, BookConfig, BookContent, ViewSettings } from '@/types/book';
+import { MokeHostLaunch } from '@/services/mokeHostLaunch';
+import { claimFixture } from '../helpers/hostLaunchFixture';
+
+const hostFixture = vi.hoisted(() => ({ launch: null as MokeHostLaunch | null }));
+vi.mock('@/services/mokeHostLaunch', async (original) => ({
+  ...(await original<typeof import('@/services/mokeHostLaunch')>()),
+  getMokeHostLaunch: () => hostFixture.launch,
+}));
+beforeEach(() => {
+  hostFixture.launch = null;
+});
 
 vi.mock('@/store/bookDataStore', async () => {
   const { create } = await import('zustand');
@@ -121,11 +132,17 @@ test('closes a newly opened source when document initialization fails', async ()
   vi.mocked(useLibraryStore.getState().getBookByHash).mockReturnValue(book);
   useSettingsStore.setState({ settings: { globalViewSettings: {} } as never });
   vi.mocked(DocumentLoader).mockImplementation(function MockDocumentLoader() {
-    return { open: vi.fn(async () => { throw error; }) };
+    return {
+      open: vi.fn(async () => {
+        throw error;
+      }),
+    };
   } as never);
-  await expect(useReaderStore.getState().initViewState(
-    { getAppService: async () => appService } as never, 'failed', 'failed-0',
-  )).rejects.toBe(error);
+  await expect(
+    useReaderStore
+      .getState()
+      .initViewState({ getAppService: async () => appService } as never, 'failed', 'failed-0'),
+  ).rejects.toBe(error);
   expect(file.close).toHaveBeenCalledOnce();
 });
 
@@ -140,12 +157,30 @@ describe('readerStore', () => {
   });
 
   describe('initViewState', () => {
-    test.each([false, true])('initializes content while avoiding whole-book nav scans online=%s', async (online) => {
+    test.each([
+      false,
+      true,
+    ])('initializes content while avoiding whole-book nav scans online=%s', async (online) => {
       vi.mocked(computeBookNav).mockClear();
       vi.mocked(hydrateBookNav).mockClear();
       window.__MOKE_EMBEDDED = online;
       window.__MOKE_SOURCE_SERVER_URL = 'https://books.example';
       window.__MOKE_BOOK_ID = '42';
+      if (online) {
+        const claim = claimFixture('https://books.example');
+        hostFixture.launch = new MokeHostLaunch(
+          {
+            ...claim,
+            resource: {
+              ...claim.resource,
+              revision: null,
+              url: 'https://books.example/api/book/42.epub',
+            },
+          },
+          vi.fn(),
+          vi.fn(),
+        );
+      }
       let resolveContent!: (content: BookContent) => void;
       const contentPromise = new Promise<BookContent>((resolve) => {
         resolveContent = resolve;
@@ -225,7 +260,10 @@ describe('readerStore', () => {
           0.1,
         );
       if (online) expect(appService.saveBookNav).not.toHaveBeenCalled();
-      else await vi.waitFor(() => expect(appService.saveBookNav).toHaveBeenCalledWith(book, cachedNav));
+      else
+        await vi.waitFor(() =>
+          expect(appService.saveBookNav).toHaveBeenCalledWith(book, cachedNav),
+        );
       window.__MOKE_EMBEDDED = false;
     });
   });
