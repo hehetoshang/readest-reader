@@ -34,6 +34,23 @@ An explicit close stops new navigation, flushes the final rendered frame and dra
 
 Legacy local paths and formats outside the claimed EPUB lane continue to use Reader-local progress and existing presentation settings. Earlier unscoped progress keys remain in local storage. Unversioned TB-455 claims retain their original relay shape. Reader makes no direct Talebook progress POST.
 
+## ArkWeb system Back for a managed mobile EPUB
+
+Look for `managedMobileBack.schema === 'moke.readest.managed-mobile-back.v1'` in the packaged Reader manifest. A live Reader with a validated `localProgress.returnTarget === 'mobile-library'` claim exposes `window.__MOKE_MANAGED_BACK__` in the top-level document. Both methods take `(launchId: string, documentGeneration: number)` from the host's reservation for that document. Serialize those two values as JavaScript literals. The methods accept no route, source identity or claim token.
+
+| Result | Host handling |
+| --- | --- |
+| `loading` | Reader has a claim, and its views are still initializing. Consume Back. The host can defer one request for this same document and invoke it once ready. |
+| `ready` | The views are initialized and the Reader can accept a close request. This is a status from `getState`. |
+| `accepted` | `requestClose` started the toolbar close flow. Consume Back and allow the Reader's eventual bound native return. |
+| `closing` | A close or native return is in progress or has already been requested. Consume repeated Back without starting another return. |
+| `blocked` | The Reader cannot confirm the close or return. Keep the current document and use host recovery if needed. |
+| `stale` | The arguments did not match the live claim or the reference was disposed. Drop this dispatch. |
+
+In Moke, route the page and ability Back paths through the shared `backwardIfPossible` helper. Before invoking `controller.backward()`, check the native reservation for the current WebView and current top-level document. For a pending or active managed mobile launch, consume Back synchronously, then use ArkWeb's JavaScript evaluation in that document. Call `requestClose` directly and treat an absent bridge, load failure or evaluation error as consumed while the managed reservation owns that document. Wait for readiness only while the captured WebView, owner generation, document generation and launch still match. Drop deferred work and evaluation callbacks on replacement, revocation or destruction. Ordinary WebView history remains available when the current document has no managed mobile reservation. Legacy online and unowned local documents have their existing return paths.
+
+`accepted` is a dispatch acknowledgement. Reader finishes the accepted navigation, flushes the final relocation and local writes, waits for the durable progress ACK and download reads, and obtains `returned/complete` for the exact final sequence through `moke_reader_closing`. The existing drain-ready hint may cause a second observation when the host replies `closing/pending` while a resource ticket settles. After the terminal ACK, Reader invokes `moke_navigate({ path: '/library' })` once. Only that command, accepted by the existing caller-bound host check and consumed once for the same native reservation, performs the return. Native code must validate the actual WebView, owner/document generations and progress/close reservation independently of JavaScript results. A definite write failure uses the existing bounded same-frame retry. Exhausted retries, ambiguous ACKs and return errors keep the host from falling through to history. Reader removes the bridge on component teardown or `pagehide`. Destruction invalidates the launch, removes the drain-ready listener and prevents a late ACK from issuing navigation.
+
 ## Downloaded EPUB claims
 
 Moke can opt in to the additive `hostDownloadedEpub` contract advertised in the Reader manifest when its native download authority is available. Keep the base claim, original canonical library address, book ID, document generations, epoch, and `localProgress` envelope. Send the following resource in place of the online URL fields.

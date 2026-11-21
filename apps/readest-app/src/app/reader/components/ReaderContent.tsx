@@ -53,6 +53,7 @@ import LocalSendManager from '@/components/localsend/LocalSendManager';
 import BooksGrid from './BooksGrid';
 import { runTransientReaderBootstrap } from '../utils/transientReader';
 import { CLAIMED_DOWNLOAD_PATH, getMokeHostLaunch } from '@/services/mokeHostLaunch';
+import { installMokeManagedBack } from '@/services/mokeManagedBack';
 
 // These dialogs pull in metadata, sync-provider, and AI integrations that are
 // not needed to paint or open a book. Keep them out of the cold-start path and
@@ -401,12 +402,22 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
         return () => {};
       });
     }
-    if (!getMokeHostLaunch() && !getMokeLegacyProgress())
+    const launch = getMokeHostLaunch();
+    const disposeBack =
+      launch?.claim.localProgress?.returnTarget === 'mobile-library'
+        ? installMokeManagedBack(
+            launch,
+            () => bookKeys.length > 0 && bookKeys.every((key) => getViewState(key)?.inited),
+            handleCloseBooksToLibrary,
+          )
+        : undefined;
+    if (!launch && !getMokeLegacyProgress())
       window.addEventListener('beforeunload', handleCloseBooks);
     eventDispatcher.on('beforereload', handleCloseBooks);
     eventDispatcher.on('close-reader', handleCloseReaderToLibrary);
     eventDispatcher.on('quit-app', handleCloseBooks);
     return () => {
+      disposeBack?.();
       window.removeEventListener('beforeunload', handleCloseBooks);
       eventDispatcher.off('beforereload', handleCloseBooks);
       eventDispatcher.off('close-reader', handleCloseReaderToLibrary);
@@ -428,14 +439,14 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     }
   };
 
-  const saveConfigAndCloseBook = async (bookKey: string, keepTTSAlive = false) => {
-    console.log('Closing book', bookKey);
+  const flushBookForClose = async (bookKey: string) => {
+    await eventDispatcher.dispatch('flush-reader-relocate', { bookKey });
+    await eventDispatcher.dispatch('stop-reader-autosave', { bookKey });
+  };
 
+  const closeBookView = async (bookKey: string, keepTTSAlive: boolean) => {
     const viewState = getViewState(bookKey);
-    if (getMokeHostLaunch() || getMokeLegacyProgress()) {
-      await eventDispatcher.dispatch('flush-reader-relocate', { bookKey });
-      await eventDispatcher.dispatch('stop-reader-autosave', { bookKey });
-    }
+    console.log('Closing book', bookKey);
     if (viewState?.isPrimary && appService?.isDesktopApp) {
       await clearDiscordPresence(appService);
     }
@@ -453,6 +464,12 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     eventDispatcher.dispatch(keepTTSAlive ? 'tts-close-book' : 'tts-stop', {
       bookKey,
     });
+  };
+
+  const saveConfigAndCloseBook = async (bookKey: string, keepTTSAlive = false) => {
+    const viewState = getViewState(bookKey);
+    if (getMokeHostLaunch() || getMokeLegacyProgress()) await flushBookForClose(bookKey);
+    await closeBookView(bookKey, keepTTSAlive);
     await saveBookConfig(bookKey);
 
     // Notify host (Moke): book closed. Must be awaited so the event
@@ -467,11 +484,15 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     clearViewState(bookKey);
   };
 
-  const navigateBackToLibrary = async (recover = false) => {
+  const navigateBackToLibrary = async (
+    recover = false,
+    prepareManagedMobileReturn?: () => Promise<void>,
+  ) => {
     await navigateReaderBack({
       search: window.location.search,
       runtimePlatform: window.__MOKE_RUNTIME_PLATFORM,
       recover,
+      prepareManagedMobileReturn,
       isReaderWindow:
         isTauriAppPlatform() &&
         appService?.hasWindow === true &&
@@ -510,17 +531,36 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
 
     const promise = (async () => {
       const settings = useSettingsStore.getState().settings;
+      const launch = getMokeHostLaunch();
+      if (launch?.claim.localProgress?.returnTarget === 'mobile-library') {
+        // Keep the last rendered page visible while persistence and native return are uncertain.
+        await Promise.all(bookKeys.map(flushBookForClose));
+        await Promise.all(bookKeys.map(saveBookConfig));
+        await saveSettings(envConfig, settings);
+        await emitReaderEvent('book:closed', {});
+        await Promise.all(
+          bookKeys.map(async (bookKey) => {
+            await closeBookView(bookKey, keepTTSAlive === true);
+            clearViewState(bookKey);
+          }),
+        );
+        return;
+      }
       await Promise.all(
         bookKeys.map(async (bookKey) => saveConfigAndCloseBook(bookKey, keepTTSAlive === true)),
       );
       await saveSettings(envConfig, settings);
-      if (getMokeHostLaunch()) await emitReaderEvent('book:closed', {});
+      if (launch) await emitReaderEvent('book:closed', {});
     })();
     closingBooksRef.current = { bookKeys: key, promise };
     return promise;
   };
 
   const handleCloseBooksToLibrary = async () => {
+    if (getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library') {
+      await navigateBackToLibrary(false, () => handleCloseBooks(true));
+      return;
+    }
     // SPA navigation in the main window (or on web) keeps the webview alive:
     // TTS may continue headless. Non-main Tauri windows close their webview
     // below, but their per-window TTS dies with the window either way.

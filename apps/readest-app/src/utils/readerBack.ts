@@ -50,6 +50,7 @@ interface ReaderBackNavigation {
   runtimePlatform?: string | null;
   isReaderWindow: boolean;
   recover?: boolean;
+  prepareManagedMobileReturn?: () => Promise<void>;
   navigateMoke: (path: '/library') => Promise<unknown>;
   closeReaderOrGoToLibrary: () => Promise<void>;
   navigateReadestLibrary: () => void;
@@ -63,6 +64,7 @@ export async function navigateReaderBack({
   runtimePlatform,
   isReaderWindow,
   recover = false,
+  prepareManagedMobileReturn,
   navigateMoke,
   closeReaderOrGoToLibrary,
   navigateReadestLibrary,
@@ -71,12 +73,12 @@ export async function navigateReaderBack({
 }: ReaderBackNavigation): Promise<void> {
   const launch = getMokeHostLaunch();
   if (launch) {
-    await launch.close();
     if (launch.claim.localProgress?.returnTarget === 'mobile-library') {
       if (isReaderWindow) throw new Error('reader_unsupported');
-      await navigateMoke('/library');
+      await launch.returnToLibrary(prepareManagedMobileReturn, () => navigateMoke('/library'));
       return;
     }
+    await launch.close();
     // The fixed host target carries only moke and mokeLaunchId. Its desktop
     // window returns by closing; full-document/mobile ownership remains gated.
     if (!isReaderWindow) throw new Error('reader_unsupported');

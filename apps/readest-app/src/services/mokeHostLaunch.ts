@@ -192,6 +192,8 @@ export class MokeHostLaunch {
   private tickets = new Set<string>();
   private cancelRequests = new Set<() => void>();
   private closingPromise?: Promise<void>;
+  private returning?: Promise<void>;
+  private returnFailed = false;
   private observePromise?: Promise<void>;
   private finishClose?: () => void;
   private failClose?: (error: unknown) => void;
@@ -432,6 +434,35 @@ export class MokeHostLaunch {
     this.closingPromise = this.drain();
     return this.closingPromise;
   }
+
+  getMobileReturnState(): 'closing' | 'blocked' | null {
+    if (this.state === 'unknown' || this.returnFailed) return 'blocked';
+    return this.returning || this.state !== 'active' ? 'closing' : null;
+  }
+
+  returnToLibrary(
+    prepare: (() => Promise<void>) | undefined,
+    navigate: () => Promise<unknown>,
+  ): Promise<void> {
+    return (this.returning ??= Promise.resolve()
+      .then(async () => {
+        if (this.state === 'unknown') throw uncertain();
+        await prepare?.();
+        await this.close();
+        // pagehide can invalidate the claim even after the terminal ACK.
+        if (this.state !== 'returned') throw uncertain();
+        await navigate();
+      })
+      .catch((error: unknown) => {
+        this.returnFailed = true;
+        throw error;
+      }));
+  }
+
+  private assertDraining(): void {
+    if (this.state !== 'draining') throw uncertain();
+  }
+
   private async drain(): Promise<void> {
     try {
       // Subscribe before closing: an ACK can emit the hint before closing's reply arrives.
@@ -446,6 +477,7 @@ export class MokeHostLaunch {
         this.hinted = true;
         if (this.canObserve) void this.observeClosing();
       });
+      this.assertDraining();
       const terminal = new Promise<void>((resolve, reject) => {
         this.finishClose = resolve;
         this.failClose = reject;
@@ -454,7 +486,7 @@ export class MokeHostLaunch {
       // Local writes, download reads and accepted progress finish before observing native return.
       await this.queue;
       await Promise.all([...this.pendingOperations]);
-      if (this.state === 'unknown') throw uncertain();
+      this.assertDraining();
       this.stopResourceRequests();
       this.canObserve = true;
       await this.observeClosing();
@@ -479,7 +511,7 @@ export class MokeHostLaunch {
           lastSequence: this.sequence,
         });
         this.assertReservation(result, this.sequence);
-        if (this.state !== 'draining') throw uncertain();
+        this.assertDraining();
         if (
           result.phase === 'returned' &&
           (result.completion === 'complete' ||

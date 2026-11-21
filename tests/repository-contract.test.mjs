@@ -44,6 +44,11 @@ test('publishes the versioned Moke reader contract', () => {
     maxReadBytes: 1048576,
     requiresHostLocalProgress: true,
   });
+  assert.deepEqual(contract.managedMobileBack, {
+    schema: 'moke.readest.managed-mobile-back.v1',
+    windowProperty: '__MOKE_MANAGED_BACK__',
+    returnTarget: 'mobile-library',
+  });
   assert.deepEqual(contract.legacyMobileProgress, {
     schema: 'moke.readest.legacy-mobile-progress.v1',
     queryLookup: 'mokeLegacyProgressId',

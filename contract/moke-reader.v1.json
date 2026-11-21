@@ -37,6 +37,11 @@
     "maxReadBytes": 1048576,
     "requiresHostLocalProgress": true
   },
+  "managedMobileBack": {
+    "schema": "moke.readest.managed-mobile-back.v1",
+    "windowProperty": "__MOKE_MANAGED_BACK__",
+    "returnTarget": "mobile-library"
+  },
   "legacyMobileProgress": {
     "schema": "moke.readest.legacy-mobile-progress.v1",
     "queryLookup": "mokeLegacyProgressId",
