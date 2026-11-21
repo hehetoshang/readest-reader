@@ -30,6 +30,7 @@ import { Toast } from '@/components/Toast';
 import { getLocale } from '@/utils/misc';
 import { initDayjs } from '@/utils/time';
 import { closeReaderAndNavigateBack } from '@/utils/readerBack';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 import ReaderContent from './ReaderContent';
 
 /*
@@ -98,6 +99,10 @@ const Reader: React.FC<{ ids?: string }> = ({ ids }) => {
         setSideBarVisible(false);
       } else if (getIsNotebookVisible() && !isNotebookPinned) {
         setNotebookVisible(false);
+      } else if (getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library') {
+        void eventDispatcher.dispatch('close-reader').catch(() => {
+          console.warn('[reader] Host return could not be confirmed');
+        });
       } else {
         void closeReaderAndNavigateBack(
           () => eventDispatcher.dispatch('close-reader'),

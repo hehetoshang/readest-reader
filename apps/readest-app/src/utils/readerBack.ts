@@ -71,6 +71,11 @@ export async function navigateReaderBack({
   const launch = getMokeHostLaunch();
   if (launch) {
     await launch.close();
+    if (launch.claim.localProgress?.returnTarget === 'mobile-library') {
+      if (isReaderWindow) throw new Error('reader_unsupported');
+      await navigateMoke('/library');
+      return;
+    }
     // The fixed host target carries only moke and mokeLaunchId. Its desktop
     // window returns by closing; full-document/mobile ownership remains gated.
     if (!isReaderWindow) throw new Error('reader_unsupported');

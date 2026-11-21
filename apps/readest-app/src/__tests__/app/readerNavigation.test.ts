@@ -9,9 +9,10 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-const createView = () => {
+const createView = (announceNavigation?: (generation: number) => void) => {
   const view = Object.assign(document.createElement('div'), {
     init: vi.fn(async () => {}),
+    open: vi.fn(async () => {}),
     goTo: vi.fn(async (_target: string | number) => {}),
     goToFraction: vi.fn(async (_fraction: number) => {}),
     next: vi.fn(async () => {}),
@@ -20,7 +21,10 @@ const createView = () => {
     addAnnotation: vi.fn(),
     history: { back: vi.fn(), forward: vi.fn() },
   });
-  return { original: { ...view }, view: wrappedFoliateView(view as unknown as FoliateView) };
+  return {
+    original: { ...view },
+    view: wrappedFoliateView(view as unknown as FoliateView, announceNavigation),
+  };
 };
 
 it('orders overlapping, repeated and mixed navigation behind initialization', async () => {
@@ -84,4 +88,24 @@ it('settles queued callers on close without starting another document load', asy
   slow.resolve();
   await Promise.resolve();
   expect(original.goTo).toHaveBeenCalledTimes(1);
+});
+
+it('does not relabel a slow old navigation or let a new turn enter the close drain', async () => {
+  const announce = vi.fn();
+  const { original, view } = createView(announce);
+  const slow = deferred();
+  const rendered: (number | null | undefined)[] = [];
+  original.goTo.mockImplementation(async (target) => {
+    if (target === 'slow') await slow.promise;
+    rendered.push(view.getNavigationGeneration?.());
+  });
+  const first = view.goTo('slow');
+  await vi.waitFor(() => expect(original.goTo).toHaveBeenCalledWith('slow'));
+  const final = view.goTo('last accepted intent');
+  const closing = view.finishNavigation?.();
+  await view.goTo('after close');
+  slow.resolve();
+  await Promise.all([first, final, closing]);
+  expect(announce.mock.calls).toEqual([[2], [3]]);
+  expect(rendered).toEqual([null, 3]);
 });

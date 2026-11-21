@@ -36,7 +36,13 @@ describe('native Reader claim and complete original identity', () => {
       },
       original.launchId,
     );
-    expect(launchFixture(claim).launch.identity).toBe('["http://books.example/a","42"]');
+    expect(JSON.parse(launchFixture(claim).launch.identity)).toEqual([
+      'http://books.example/a',
+      null,
+      '42',
+      'epub',
+      [claim.resource.revision, claim.resource.etag, claim.resource.size],
+    ]);
   });
   it('accepts the fixed legacy EPUB template from a native claim', () => {
     const original = claimFixture();

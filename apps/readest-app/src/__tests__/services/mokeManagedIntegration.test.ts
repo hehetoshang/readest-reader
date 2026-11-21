@@ -99,7 +99,7 @@ describe('complete progress identity, relay and return integration', () => {
       payload: { location: 'last', reader_book_id: 'same-bytes' },
     });
     expect(
-      JSON.parse(localStorage.getItem('moke-reader-progress-v1:["http://books.example/a","42"]')!)[
+      JSON.parse(localStorage.getItem(`moke-reader-progress-v2:${fixture.launch.identity}`)!)[
         'location'
       ],
     ).toBe('last');

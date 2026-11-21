@@ -103,11 +103,11 @@ At a high level:
 1. Moke serves the build at `/readest` and opens `/readest/reader`.
 2. Controlled online launches carry `moke=1&mokeLaunchId=...`. Reader claims the native caller-bound launch before mounting its providers, making HTTP requests or restoring progress.
 3. Each HEAD/GET reserves a ticket for the sealed URL. Native EOF or confirmed cancellation and the original settle ACK are required before releasing it.
-4. Local progress/config/view identities use the canonical original full library base and book ID. Equal book bytes in `/a` and `/b` have independent positions. Anonymous legacy positions are preserved without being restored into either library.
+4. Local progress/config/view identities use the original full library base, account, book, format and claimed file version. Equal book bytes in `/a` and `/b` have independent positions. Anonymous legacy positions are preserved without being restored into either library.
 5. Managed progress goes through `moke_reader_progress` with increasing sequences. The host owns remote persistence; Reader never adds a direct POST or borrows a global server to obtain remote restore data.
 6. Closing drains local writes and trailing progress, then waits for an authoritative terminal `moke_reader_closing` result. A drain-ready event requests re-observation; timeout, abort and document destruction do not prove return.
 
-Legacy host-authorized local files remain supported. Their query context and old single-WebView direct-save path grant no authority to managed online launches. The fixed Moke `21a2142` backend supports the controlled window lane only on Linux with the full packaged capability group; Windows, mobile and full-document ownership remain gated. A claim currently contains no remote progress snapshot. Publishing a new manifest alone does not validate or enable those lanes.
+Legacy host-authorized local files remain supported. They retain Reader-local snapshots and desktop host events. Reader makes no direct progress POST. The fixed Moke `21a2142` backend supports the controlled window lane only on Linux with the full packaged capability group; Windows, mobile and full-document ownership remain gated. A claim currently contains no remote progress snapshot. The optional host-local progress extension adds native restore receipts, navigation generations and persistence acknowledgements. See [the host integration guide](docs/HOST_LOCAL_PROGRESS.md).
 
 Moke must register `readestlib` plugins, protocols and invoke handlers, and must list Reader plugin crates as direct Cargo dependencies so Tauri can discover their ACL manifests.
 

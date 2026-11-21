@@ -29,11 +29,9 @@ Publication content remains in Foliate sandbox frames. TLS/cookie policy remains
 
 ## Local progress identity and restore
 
-Persistent snapshot keys are `moke-reader-progress-v1:` plus `JSON.stringify([canonicalOriginalLibraryBaseUrl, String(bookId)])`. Reader derives its existing hex book/config/store ID from that tuple, preserving the byte hash separately. This isolates localStorage, config paths, memory, first view restore, autosave and close saves for same-byte books in same-origin `/a` and `/b`.
+Claimed Reader storage scopes include the original canonical base, account, book ID, format and file version. Earlier local snapshots are preserved without importing them into a confirmed account. Reader configuration can contribute presentation settings without borrowing anonymous progress.
 
-An old snapshot whose key explicitly names the same original full base may restore. Empty-namespace snapshots are never read, migrated or deleted. Anonymous byte-hash config contributes presentation settings only, never location, page, XPointer or other progress. Identity-scoped snapshots cannot roll back a newer identity-scoped config.
-
-The current claim has **no remote restore snapshot**. Reader does not fetch one using a global server or reconstruct authority. That host integration remains a separate follow-up. Third-party file/KOSync progress providers remain disabled during managed launches so another source cannot overwrite the claimed position.
+The optional [host-local progress extension](HOST_LOCAL_PROGRESS.md) supplies the host?s selected local restore position. Third-party file/KOSync progress providers remain disabled during managed launches so another source cannot overwrite the claimed position.
 
 ## Progress relay and return
 
@@ -45,7 +43,7 @@ Moke `21a2142` keeps Windows, mobile and full-document ownership unsupported. Th
 
 ## Legacy local launch
 
-Already host-authorized local files may use `file`/`window.OPEN_WITH_FILES` and legacy presentation/context parameters. These values do not authorize an online source or declare capabilities. Legacy direct single-WebView progress saving remains for that compatibility path; managed online progress always has the host as sole remote owner. `mokeReturnTo` allows only `/library` on legacy returns.
+Already host-authorized local files may use `file`/`window.OPEN_WITH_FILES` and legacy presentation/context parameters. These values do not authorize an online source or declare capabilities. Legacy single-WebView progress stays local. Desktop legacy events remain available to the host. `mokeReturnTo` allows only `/library` on legacy returns.
 
 Moke links `readestlib` with `default-features = false`, registers Reader plugins/protocols/invoke handlers/state and keeps plugin crates as direct dependencies for Tauri ACL manifests. Lifecycle and extension events continue through `ext_reader_event`; managed page persistence uses the frozen native relay instead. The retained progress schema is `moke.readest.progress.v1`.
 

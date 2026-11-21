@@ -19,6 +19,18 @@
     "persistentIdentity": "JSON.stringify([canonicalOriginalLibraryBaseUrl, String(bookId)])",
     "productionGate": "host-controlled; full-document/mobile ownership requires platform validation"
   },
+  "hostLocalProgress": {
+    "schema": "moke.readest.host-local-progress.v1",
+    "claimMember": "localProgress",
+    "format": "epub",
+    "progressOwner": "host",
+    "commands": {
+      "restoreReceipt": "moke_reader_acknowledge_restore",
+      "beginNavigation": "moke_reader_begin_navigation",
+      "capture": "moke_reader_progress",
+      "drain": "moke_reader_closing"
+    }
+  },
   "launchParameters": {
     "file": {
       "required": false,
@@ -61,6 +73,7 @@
     "transport": "@tauri-apps/plugin-http"
   },
   "progressApi": {
+    "owner": "host",
     "method": "POST",
     "pathTemplate": "/api/book/{mokeBookId}/progress",
     "credentials": "include",

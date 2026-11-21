@@ -394,7 +394,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
         return () => {};
       });
     }
-    window.addEventListener('beforeunload', handleCloseBooks);
+    if (!getMokeHostLaunch()) window.addEventListener('beforeunload', handleCloseBooks);
     eventDispatcher.on('beforereload', handleCloseBooks);
     eventDispatcher.on('close-reader', handleCloseReaderToLibrary);
     eventDispatcher.on('quit-app', handleCloseBooks);
@@ -484,6 +484,9 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   };
 
   const handleCloseReaderToLibrary = () => {
+    if (getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library') {
+      return handleCloseBooksToLibrary();
+    }
     return handleCloseBooks(true);
   };
 
@@ -511,6 +514,10 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     // TTS may continue headless. Non-main Tauri windows close their webview
     // below, but their per-window TTS dies with the window either way.
     await handleCloseBooks(true);
+    if (getMokeHostLaunch()) {
+      await navigateBackToLibrary();
+      return;
+    }
     if (isTauriAppPlatform()) {
       const currentWindow = getCurrentWindow();
       if (currentWindow.label === 'main') {

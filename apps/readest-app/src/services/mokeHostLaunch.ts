@@ -21,6 +21,14 @@ export interface ReaderClaim extends ReaderReservation {
   schema: 'moke.readest.host-launch.v1';
   claimToken: string;
   progressOwner: 'host';
+  localProgress?: {
+    schema: 'moke.readest.host-local-progress.v1';
+    accountId: string | null;
+    fileVersion: string;
+    format: 'epub';
+    returnTarget: 'desktop-window' | 'mobile-library';
+    restore: { id: string; position: Record<string, unknown> } | null;
+  };
   resource: {
     url: string;
     effectiveBaseUrl: string;
@@ -34,6 +42,39 @@ const invalid = () => new Error('reader_invalid_launch');
 const uncertain = () => new Error('reader_launch_unknown');
 const positive = (n: unknown): n is number => Number.isSafeInteger(n) && Number(n) > 0;
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object';
+
+function validateLocalProgress(value: unknown, bookId: string): ReaderClaim['localProgress'] {
+  if (value === undefined) return;
+  if (
+    !record(value) ||
+    value['schema'] !== 'moke.readest.host-local-progress.v1' ||
+    value['format'] !== 'epub' ||
+    (value['accountId'] !== null &&
+      (typeof value['accountId'] !== 'string' || !value['accountId'])) ||
+    typeof value['fileVersion'] !== 'string' ||
+    !value['fileVersion'] ||
+    (value['returnTarget'] !== 'desktop-window' && value['returnTarget'] !== 'mobile-library')
+  )
+    throw invalid();
+  const restore = value['restore'];
+  if (restore !== null) {
+    if (!record(restore) || typeof restore['id'] !== 'string' || !restore['id']) throw invalid();
+    const position = restore['position'];
+    if (
+      !record(position) ||
+      position['schema'] !== 'moke.readest.progress.v1' ||
+      position['reader'] !== 'readest' ||
+      position['moke_book_id'] !== bookId ||
+      Object.hasOwn(position, 'moke_navigation_kind')
+    )
+      throw invalid();
+    return Object.freeze({
+      ...value,
+      restore: Object.freeze({ id: restore['id'], position: Object.freeze({ ...position }) }),
+    }) as ReaderClaim['localProgress'];
+  }
+  return Object.freeze({ ...value, restore: null }) as ReaderClaim['localProgress'];
+}
 
 /** Syntax mirrors the frozen host parser; authority still comes only from claim IPC. */
 export function validateReaderClaim(value: unknown, launchId: string): ReaderClaim {
@@ -100,6 +141,7 @@ export function validateReaderClaim(value: unknown, launchId: string): ReaderCla
     ...value,
     source: Object.freeze({ ...source }),
     resource: Object.freeze({ ...resource }),
+    localProgress: validateLocalProgress(value['localProgress'], value['bookId']),
   }) as unknown as ReaderClaim;
 }
 
@@ -107,6 +149,8 @@ export function validateReaderClaim(value: unknown, launchId: string): ReaderCla
 export class MokeHostLaunch {
   readonly identity: string;
   private sequence = 0;
+  private navigationGeneration = 1;
+  private lastPosition?: string;
   private state: 'active' | 'draining' | 'returned' | 'unknown' = 'active';
   private queue: Promise<void> = Promise.resolve();
   private tickets = new Set<string>();
@@ -125,7 +169,17 @@ export class MokeHostLaunch {
     private invoke: ReaderInvoke,
     private listen: ReaderListen,
   ) {
-    this.identity = JSON.stringify([claim.source.libraryBaseUrl, claim.bookId]);
+    this.identity = JSON.stringify([
+      claim.source.libraryBaseUrl,
+      claim.localProgress?.accountId ?? null,
+      claim.bookId,
+      'epub',
+      claim.localProgress?.fileVersion ?? [
+        claim.resource.revision,
+        claim.resource.etag,
+        claim.resource.size,
+      ],
+    ]);
   }
 
   assertActive(): void {
@@ -169,20 +223,11 @@ export class MokeHostLaunch {
     )
       throw uncertain();
   }
-  progress(payload: Record<string, unknown>): Promise<void> {
+  private enqueue(action: () => Promise<void>): Promise<void> {
     this.assertActive();
-    // Capture payload now, before any asynchronous work or a later relocate can change it.
-    const captured = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
-    const sequence = ++this.sequence;
     const operation = this.queue.then(async () => {
       if (this.state === 'unknown' || this.state === 'returned') throw uncertain();
-      const result = await this.invoke<ReaderReservation>('moke_reader_progress', {
-        ...this.args(),
-        sequence,
-        payload: captured,
-      });
-      this.assertReservation(result, sequence);
-      if (result.phase !== 'claimed' || result.completion !== 'pending') throw uncertain();
+      await action();
     });
     this.queue = operation.catch((error: unknown) => {
       this.markUnknown();
@@ -191,6 +236,69 @@ export class MokeHostLaunch {
     // Rejections remain visible to callers without creating an unhandled queue rejection.
     void this.queue.catch(() => undefined);
     return this.queue;
+  }
+  beginNavigation(generation: number): void {
+    if (!this.claim.localProgress || !this.isActive() || generation <= this.navigationGeneration)
+      return;
+    this.navigationGeneration = generation;
+    void this.enqueue(async () => {
+      const acknowledged = await this.invoke<boolean>('moke_reader_begin_navigation', {
+        ...this.args(),
+        navigationGeneration: generation,
+      });
+      if (acknowledged !== true) throw uncertain();
+    });
+  }
+  acknowledgeRestore(outcome: 'applied' | 'unavailable'): void {
+    const restore = this.claim.localProgress?.restore;
+    if (!restore || !this.isActive() || this.navigationGeneration !== 1) return;
+    void this.enqueue(async () => {
+      const acknowledged = await this.invoke<boolean>('moke_reader_acknowledge_restore', {
+        ...this.args(),
+        receipt: { id: restore.id, navigationGeneration: 1, outcome },
+      });
+      if (acknowledged !== true) throw uncertain();
+    });
+  }
+  progress(payload: Record<string, unknown>, generation?: number): Promise<void> {
+    const versioned = !!this.claim.localProgress;
+    if (versioned && (generation === undefined || generation !== this.navigationGeneration))
+      return Promise.resolve();
+    const captured = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
+    // Keep layout-only metadata from flooding the host while the locator is unchanged.
+    const position = JSON.stringify([generation, captured['location'], captured['section_href']]);
+    if (versioned && this.lastPosition === position) return Promise.resolve();
+    if (versioned) this.lastPosition = position;
+    return this.enqueue(async () => {
+      const sequence = this.sequence + 1;
+      const args = {
+        ...this.args(),
+        sequence,
+        payload: captured,
+        ...(versioned ? { navigationGeneration: generation } : {}),
+      };
+      for (let attempt = 0; ; attempt++) {
+        const result = await this.invoke<
+          ReaderReservation & { localProgressStatus?: 'saved' | 'duplicate' | 'write-failed' }
+        >('moke_reader_progress', args);
+        const failed = versioned && result.localProgressStatus === 'write-failed';
+        this.assertReservation(result, failed ? this.sequence : sequence);
+        if (result.phase !== 'claimed' || result.completion !== 'pending') throw uncertain();
+        if (failed && attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+          if (this.state === 'unknown') throw uncertain();
+          continue;
+        }
+        if (
+          versioned &&
+          result.localProgressStatus !== 'saved' &&
+          result.localProgressStatus !== 'duplicate'
+        )
+          throw uncertain();
+        this.sequence = sequence;
+        return;
+      }
+    });
   }
   resourceLifecycle(url: string, method: string) {
     this.assertActive();
@@ -283,7 +391,11 @@ export class MokeHostLaunch {
         });
         this.assertReservation(result, this.sequence);
         if (this.state !== 'draining') throw uncertain();
-        if (result.phase === 'returned' && ['complete', 'failed'].includes(result.completion)) {
+        if (
+          result.phase === 'returned' &&
+          (result.completion === 'complete' ||
+            (!this.claim.localProgress && result.completion === 'failed'))
+        ) {
           if (this.tickets.size) throw uncertain();
           this.state = 'returned';
           this.unlisten?.();

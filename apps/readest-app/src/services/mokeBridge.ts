@@ -270,85 +270,12 @@ function isAnnotationNavigationEvent(data: Record<string, unknown>): boolean {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Moke 服务器进度直存（单 WebView 运行时专用）
-// ---------------------------------------------------------------------------
-//
-// 在 Android / iOS / OHOS 上，宿主 Moke 应用只有唯一一个 WebView。打开阅读器时
-// Moke 会整页导航到 `/readest/reader`，把 Moke 应用（含 ReaderProgressProvider）
-// 卸载掉——桌面端由主窗口消费的 `reader:page:changed` 事件在移动端没有监听者。
-// 因此宿主会把 serverUrl 通过 `mokeServerUrl` 查询参数透传进来，由阅读器在嵌入
-// 模式下直接把进度保存到 Moke 服务器（与桌面端 ReaderProgressProvider 的保存
-// 逻辑保持一致，POST 到 `/api/book/{id}/progress`）。
-//
-// 桌面端阅读器窗口拿不到 `mokeServerUrl`（宿主不传），所以这里不会与桌面端
-// 主窗口的 ReaderProgressProvider 重复保存。
-
-const PROGRESS_SAVE_DEBOUNCE_MS = 1200;
-const SAFE_ERROR_CODE = /^[a-z0-9._-]{1,64}$/i;
-
 export interface MokeReaderErrorDetail {
   code: string;
   operation: 'progress.save';
   status?: number;
   retryable: boolean;
 }
-
-class MokeProgressSaveError extends Error {
-  constructor(
-    readonly code: string,
-    readonly status?: number,
-  ) {
-    super(code);
-    this.name = 'MokeProgressSaveError';
-  }
-}
-
-function reportMokeReaderError(error: unknown): void {
-  const status = error instanceof MokeProgressSaveError ? error.status : undefined;
-  const code =
-    error instanceof MokeProgressSaveError && SAFE_ERROR_CODE.test(error.code)
-      ? error.code
-      : 'progress.network';
-  const detail: MokeReaderErrorDetail = {
-    code,
-    operation: 'progress.save',
-    ...(status === undefined ? {} : { status }),
-    retryable: status === undefined || status === 408 || status === 429 || status >= 500,
-  };
-
-  // Deliberately log only normalized metadata: transport errors may contain a
-  // URL, cookie or credential supplied by the embedding host.
-  console.warn('[mokeBridge] Reader integration error:', detail);
-  window.dispatchEvent(new CustomEvent<MokeReaderErrorDetail>('moke:reader-error', { detail }));
-  void _doEmit('reader:error', detail as unknown as Record<string, unknown>);
-}
-
-async function validateProgressResponse(response: Response): Promise<void> {
-  if (!response.ok) {
-    throw new MokeProgressSaveError(`progress.http.${response.status}`, response.status);
-  }
-
-  const contentType = response.headers.get('content-type')?.toLowerCase() || '';
-  if (!contentType.includes('application/json')) {
-    throw new MokeProgressSaveError('progress.invalid_response', response.status);
-  }
-
-  let envelope: { err?: unknown };
-  try {
-    envelope = (await response.json()) as { err?: unknown };
-  } catch {
-    throw new MokeProgressSaveError('progress.invalid_response', response.status);
-  }
-  if (typeof envelope.err === 'string' && envelope.err !== '' && envelope.err !== 'ok') {
-    const serverCode = SAFE_ERROR_CODE.test(envelope.err) ? envelope.err : 'invalid';
-    throw new MokeProgressSaveError(`progress.api.${serverCode}`, response.status);
-  }
-}
-
-let progressSaveTimer: ReturnType<typeof setTimeout> | null = null;
-let pendingProgress: Record<string, unknown> | null = null;
-let progressFlushListenersRegistered = false;
 
 function progressStringValue(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
@@ -359,48 +286,6 @@ function progressStringValue(value: unknown): string | undefined {
 function progressNumberValue(value: unknown): number | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
   return value;
-}
-
-async function saveProgressToMokeServer(data: Record<string, unknown>): Promise<void> {
-  const serverUrl = window.__MOKE_SERVER_URL;
-  const mokeBookId = window.__MOKE_BOOK_ID;
-  if (typeof serverUrl !== 'string' || !serverUrl || !mokeBookId) return;
-
-  const payload = {
-    schema: 'moke.readest.progress.v1',
-    reader: 'readest',
-    moke_book_id: String(mokeBookId),
-    reader_book_id: progressStringValue(data['book_id']),
-    view_key: progressStringValue(data['view_key']),
-    location: progressStringValue(data['location']),
-    section_href: progressStringValue(data['section_href']),
-    chapter: progressStringValue(data['chapter']),
-    page: progressNumberValue(data['page']),
-    total_pages: progressNumberValue(data['total_pages']),
-    progress: progressNumberValue(data['progress']),
-    fraction: progressNumberValue(data['fraction']),
-    updated_at: new Date().toISOString(),
-  };
-
-  try {
-    const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
-    const response = await tauriFetch(
-      `${serverUrl}/api/book/${encodeURIComponent(String(mokeBookId))}/progress`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ progress: payload }),
-        credentials: 'include',
-        maxRedirections: 5,
-        danger: { acceptInvalidCerts: true, acceptInvalidHostnames: true },
-      } as unknown as RequestInit,
-    );
-    await validateProgressResponse(response);
-  } catch (error) {
-    // Best effort: rendering continues, while both Moke IPC and the browser
-    // error event expose a stable, non-secret failure for diagnostics/E2E.
-    reportMokeReaderError(error);
-  }
 }
 
 function saveProgressToLocalStorage(data: Record<string, unknown>): void {
@@ -433,46 +318,6 @@ function saveProgressToLocalStorage(data: Record<string, unknown>): void {
   }
 }
 
-function scheduleProgressSave(data: Record<string, unknown>): void {
-  ensureProgressFlushListeners();
-  pendingProgress = data;
-  if (progressSaveTimer) clearTimeout(progressSaveTimer);
-  progressSaveTimer = setTimeout(() => {
-    progressSaveTimer = null;
-    const latest = pendingProgress;
-    pendingProgress = null;
-    if (latest) void saveProgressToMokeServer(latest);
-  }, PROGRESS_SAVE_DEBOUNCE_MS);
-}
-
-function flushProgressSave(): Promise<void> {
-  if (progressSaveTimer) {
-    clearTimeout(progressSaveTimer);
-    progressSaveTimer = null;
-  }
-  const latest = pendingProgress;
-  pendingProgress = null;
-  if (!latest) return Promise.resolve();
-  return saveProgressToMokeServer(latest);
-}
-
-function ensureProgressFlushListeners(): void {
-  if (typeof window === 'undefined' || progressFlushListenersRegistered) return;
-  progressFlushListenersRegistered = true;
-
-  // System back gestures, app backgrounding, and OS process reclamation can
-  // unload the single mobile WebView without emitting book:closed. Start the
-  // pending direct save as soon as the page is hidden instead of waiting for
-  // the debounce timer that will be destroyed with the page.
-  window.addEventListener('pagehide', () => {
-    void flushProgressSave();
-  });
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') void flushProgressSave();
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -506,7 +351,11 @@ function flushManagedProgress(): Promise<void> {
  * 返回一个 Promise，resolve() 时表示事件已送达（或尽力送达）。
  * 调用方（尤其是关闭流程）应 await 此返回值，确保事件在窗口销毁前发出。
  */
-export function emitReaderEvent(event: string, data: Record<string, unknown>): Promise<void> {
+export function emitReaderEvent(
+  event: string,
+  data: Record<string, unknown>,
+  navigationGeneration?: number,
+): Promise<void> {
   const launch = getMokeHostLaunch();
   if (hasMokeHostLookup() && !launch) return Promise.reject(new Error('reader_invalid_launch'));
   if (launch) {
@@ -514,10 +363,15 @@ export function emitReaderEvent(event: string, data: Record<string, unknown>): P
       // Stop accepting relocations after the explicit trailing drain. Late
       // events cannot resurrect a returned/revoked document or enter a new source.
       if (managedClosing || !launch.isActive()) return Promise.resolve();
+      if (
+        launch.claim.localProgress &&
+        (navigationGeneration === undefined || isAnnotationNavigationEvent(data))
+      )
+        return Promise.resolve();
       let payload: Record<string, unknown>;
       try {
         payload = progressPayload(data, launch);
-        if (!isAnnotationNavigationEvent(data))
+        if (!launch.claim.localProgress && !isAnnotationNavigationEvent(data))
           writeManagedProgress(launch, payload, window.localStorage);
       } catch (error) {
         launch.markUnknown();
@@ -527,6 +381,10 @@ export function emitReaderEvent(event: string, data: Record<string, unknown>): P
           }),
         );
         return Promise.reject(error);
+      }
+      if (launch.claim.localProgress) {
+        if (!payload['location'] && !payload['section_href']) return Promise.resolve();
+        return launch.progress(payload, navigationGeneration);
       }
       managedProgress = payload;
       if (managedProgressTimer) clearTimeout(managedProgressTimer);
@@ -551,25 +409,15 @@ export function emitReaderEvent(event: string, data: Record<string, unknown>): P
   const annotationNavigationEvent = event === 'page:changed' && isAnnotationNavigationEvent(data);
 
   // Correlated startup/annotation relocations are previews, not reading
-  // progress. Skip both local and server persistence; genuine user turns have
+  // progress. Skip local persistence for previews; genuine user turns have
   // no navigation marker and continue through the ordinary paths below.
   if (event === 'page:changed' && !annotationNavigationEvent) {
     saveProgressToLocalStorage(data);
   }
 
-  // 单 WebView 运行时宿主应用已被卸载，这里由阅读器直接保存进度。
-  if (
-    event === 'page:changed' &&
-    !annotationNavigationEvent &&
-    typeof window.__MOKE_SERVER_URL === 'string'
-  ) {
-    scheduleProgressSave(data);
-  }
-
-  // 关闭书籍前先冲刷待保存的进度并回收定位状态。
   if (event === 'book:closed') {
     cancelMokeAnnotationNavigation();
-    return flushProgressSave().then(() => _doEmit(event, data));
+    return _doEmit(event, data);
   }
 
   // Never put correlation markers behind the generic trailing-edge throttle:

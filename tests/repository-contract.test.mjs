@@ -24,6 +24,19 @@ test('publishes the versioned Moke reader contract', () => {
   assert.equal(contract.readerRoute, '/readest/reader');
   assert.equal(contract.progressApi.credentials, 'include');
   assert.equal(contract.progressApi.transport, '@tauri-apps/plugin-http');
+  assert.equal(contract.progressApi.owner, 'host');
+  assert.deepEqual(contract.hostLocalProgress, {
+    schema: 'moke.readest.host-local-progress.v1',
+    claimMember: 'localProgress',
+    format: 'epub',
+    progressOwner: 'host',
+    commands: {
+      restoreReceipt: 'moke_reader_acknowledge_restore',
+      beginNavigation: 'moke_reader_begin_navigation',
+      capture: 'moke_reader_progress',
+      drain: 'moke_reader_closing',
+    },
+  });
   assert.ok(contract.readerEvents.includes('reader:error'));
   assert.ok(contract.nativeLibrary.registrationFunctions.includes('reader_invoke_handler'));
 });

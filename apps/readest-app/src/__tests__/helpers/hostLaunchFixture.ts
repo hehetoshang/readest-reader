@@ -6,7 +6,10 @@ import {
   type ReaderReservation,
 } from '@/services/mokeHostLaunch';
 
-export function claimFixture(base = 'http://books.example/a'): ReaderClaim {
+export function claimFixture(
+  base = 'http://books.example/a',
+  localProgress?: ReaderClaim['localProgress'],
+): ReaderClaim {
   return validateReaderClaim(
     {
       schema: 'moke.readest.host-launch.v1',
@@ -15,6 +18,7 @@ export function claimFixture(base = 'http://books.example/a'): ReaderClaim {
       completion: 'pending',
       claimToken: 'synthetic-claim-not-an-authorization',
       progressOwner: 'host',
+      localProgress,
       source: { savedServerId: 'fixture', entryRevision: 'fixture-1', libraryBaseUrl: base },
       bookId: '42',
       ownerDocumentGeneration: 17,
@@ -31,6 +35,28 @@ export function claimFixture(base = 'http://books.example/a'): ReaderClaim {
     },
     'synthetic-launch',
   );
+}
+
+export function localProgressFixture(
+  changes: Partial<NonNullable<ReaderClaim['localProgress']>> = {},
+): NonNullable<ReaderClaim['localProgress']> {
+  return {
+    schema: 'moke.readest.host-local-progress.v1',
+    accountId: '7',
+    fileVersion: 'epub-bytes-1',
+    format: 'epub',
+    returnTarget: 'desktop-window',
+    restore: {
+      id: 'restore-1',
+      position: {
+        schema: 'moke.readest.progress.v1',
+        reader: 'readest',
+        moke_book_id: '42',
+        location: 'epubcfi(/6/4!/4/2)',
+      },
+    },
+    ...changes,
+  };
 }
 
 export function reservation(

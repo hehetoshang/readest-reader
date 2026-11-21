@@ -80,6 +80,9 @@ export interface Renderer extends HTMLElement {
 
 export interface FoliateView extends HTMLElement {
   readonly hasUserNavigation?: boolean;
+  getNavigationGeneration?: () => number | null;
+  noteRendererNavigation?: (reason: string) => void;
+  finishNavigation?: () => Promise<void>;
   open: (book: BookDoc) => Promise<void>;
   close: () => void;
   init: (options: { lastLocation: string }) => void;
@@ -137,14 +140,23 @@ export interface FoliateView extends HTMLElement {
   renderer: Renderer;
 }
 
-export const wrappedFoliateView = (originalView: FoliateView): FoliateView => {
+export const wrappedFoliateView = (
+  originalView: FoliateView,
+  announceNavigation?: (generation: number) => void,
+): FoliateView => {
   let initialization: Promise<void> | undefined;
   let initializing = false;
   let hasUserNavigation = false;
+  let requestedGeneration = 1;
+  let renderedGeneration = 1;
+  let navigating = false;
+  let finishing = false;
   Object.defineProperty(originalView, 'hasUserNavigation', { get: () => hasUserNavigation });
   const readingAction = () => {
-    if (!initializing) hasUserNavigation = true;
+    hasUserNavigation = true;
+    announceNavigation?.(++requestedGeneration);
     originalView.dispatchEvent(new Event('reading-action'));
+    return requestedGeneration;
   };
   let navigation: Promise<unknown> = Promise.resolve();
   const lifetime = new AbortController();
@@ -154,15 +166,54 @@ export const wrappedFoliateView = (originalView: FoliateView): FoliateView => {
   // One renderer must finish loading a document before the next operation can
   // replace it. Recover the queue after errors, while returning each caller's
   // own completion (or close cancellation).
-  const enqueue = (action: () => void | Promise<void>) => {
+  const enqueue = (action: () => void | Promise<void>, generation: number) => {
     const pending = navigation.then(async () => {
       if (lifetime.signal.aborted) return;
+      renderedGeneration = generation;
+      navigating = true;
       originalView.dispatchEvent(new Event('reading-action'));
-      return action();
+      try {
+        await action();
+      } finally {
+        navigating = false;
+      }
     });
     navigation = pending.catch(() => undefined);
     return Promise.race([pending, canceled]);
   };
+  originalView.getNavigationGeneration = () =>
+    renderedGeneration === requestedGeneration && renderedGeneration > 1 && !lifetime.signal.aborted
+      ? renderedGeneration
+      : null;
+  originalView.noteRendererNavigation = (reason) => {
+    if (
+      announceNavigation &&
+      !navigating &&
+      !initialization &&
+      !finishing &&
+      renderedGeneration === requestedGeneration &&
+      (reason === 'scroll' || reason === 'snap' || reason === 'page')
+    )
+      renderedGeneration = readingAction();
+  };
+  originalView.finishNavigation = async () => {
+    finishing = true;
+    await Promise.race([navigation, canceled]);
+  };
+  if (announceNavigation) {
+    const open = originalView.open.bind(originalView);
+    originalView.open = async (book) => {
+      await open(book);
+      const renderer = originalView.renderer;
+      for (const method of ['nextSection', 'prevSection'] as const) {
+        const step = renderer[method]?.bind(renderer);
+        if (!step) continue;
+        renderer[method] = async () => {
+          if (!finishing) await enqueue(step, readingAction());
+        };
+      }
+    };
+  }
   const close = originalView.close.bind(originalView);
   originalView.close = () => {
     lifetime.abort();
@@ -189,20 +240,38 @@ export const wrappedFoliateView = (originalView: FoliateView): FoliateView => {
   for (const method of ['next', 'prev'] as const) {
     const navigate = originalView[method].bind(originalView);
     originalView[method] = (distance?: number) => {
-      readingAction();
-      return enqueue(() => navigate(distance));
+      if (initializing) return navigate(distance);
+      if (finishing) return;
+      return enqueue(() => navigate(distance), readingAction());
     };
   }
   const goToFraction = originalView.goToFraction.bind(originalView);
   originalView.goToFraction = (fraction, options) => {
-    if (!options?.initial) readingAction();
-    return enqueue(() => goToFraction(fraction));
+    if (finishing) return;
+    return enqueue(() => goToFraction(fraction), options?.initial ? 1 : readingAction());
   };
   for (const method of ['back', 'forward'] as const) {
     const navigate = originalView.history[method].bind(originalView.history);
     originalView.history[method] = () => {
-      readingAction();
-      return navigate();
+      if (finishing) return;
+      if (!announceNavigation) {
+        readingAction();
+        return navigate();
+      }
+      return enqueue(() => {
+        // Foliate dispatches popstate synchronously but History's API discards
+        // renderer.goTo's promise. Keep the same queue ownership until it settles.
+        const renderer = originalView.renderer;
+        const goTo = renderer.goTo;
+        let pending: Promise<void> | undefined;
+        renderer.goTo = (target) => (pending = goTo.call(renderer, target));
+        try {
+          navigate();
+          return pending;
+        } finally {
+          renderer.goTo = goTo;
+        }
+      }, readingAction());
     };
   }
   const originalAddAnnotation = originalView.addAnnotation.bind(originalView);
@@ -221,16 +290,16 @@ export const wrappedFoliateView = (originalView: FoliateView): FoliateView => {
   // here is compatible with the void return type in TypeScript and lets callers
   // that know about the promise (e.g. tests, async handlers) await completion.
   originalView.goTo = (target: string | number): Promise<void> => {
+    if (finishing) return Promise.resolve();
     // Cross-section jumps can take seconds (the target section's images block
     // its iframe load); surface start/end so the viewer can show a spinner.
     const accepted = originalView.dispatchEvent(
       new CustomEvent('navigate-start', { detail: { target }, cancelable: true }),
     );
-    if (accepted) hasUserNavigation = true;
     // Recreating the same iframe before its load resolves strands init. A
     // repeated host restore is canceled by the pending initial-location owner;
     // a new jump waits for that first document before taking over.
-    const pending = accepted ? enqueue(() => originalGoTo(target)) : undefined;
+    const pending = accepted ? enqueue(() => originalGoTo(target), readingAction()) : undefined;
     return Promise.resolve(pending).finally(() => {
       originalView.dispatchEvent(new CustomEvent('navigate-end'));
     });

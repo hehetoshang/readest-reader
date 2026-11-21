@@ -2,7 +2,7 @@ import type { Book, BookConfig } from '@/types/book';
 import { getMokeHostLaunch, type MokeHostLaunch } from './mokeHostLaunch';
 import { md5 } from '@/utils/md5';
 
-const PREFIX = 'moke-reader-progress-v1:';
+const PREFIX = 'moke-reader-progress-v2:';
 
 export function managedBookIdentity(sourceUrl: string): string | null {
   const launch = getMokeHostLaunch();
@@ -57,28 +57,20 @@ export function readManagedProgress(
   storage: Pick<Storage, 'getItem'>,
 ): Record<string, unknown> | null {
   launch.assertActive();
-  // A legacy key with this explicit original full base has provable ownership. The empty key is never read.
-  const keys = [
-    PREFIX + launch.identity,
-    `moke:reading-progress:${encodeURIComponent(launch.claim.source.libraryBaseUrl)}:${encodeURIComponent(launch.claim.bookId)}`,
-  ];
-  for (const key of keys) {
-    const raw = storage.getItem(key);
-    if (!raw) continue;
-    try {
-      const value: unknown = JSON.parse(raw);
-      if (value && typeof value === 'object') {
-        const p = value as Record<string, unknown>;
-        if (
-          p['schema'] === 'moke.readest.progress.v1' &&
-          p['reader'] === 'readest' &&
-          p['moke_book_id'] === launch.claim.bookId
-        )
-          return p;
-      }
-    } catch {
-      /* Preserve malformed originals; do not infer a position. */
+  try {
+    const raw = storage.getItem(PREFIX + launch.identity);
+    const value: unknown = raw ? JSON.parse(raw) : null;
+    if (value && typeof value === 'object') {
+      const p = value as Record<string, unknown>;
+      if (
+        p['schema'] === 'moke.readest.progress.v1' &&
+        p['reader'] === 'readest' &&
+        p['moke_book_id'] === launch.claim.bookId
+      )
+        return p;
     }
+  } catch {
+    /* Preserve malformed originals. */
   }
   return null;
 }
@@ -104,6 +96,7 @@ export function restoreManagedConfig(book: Book, config: BookConfig): BookConfig
   const launch = getMokeHostLaunch();
   if (!book.mokeIdentity || !launch || book.mokeIdentity !== launch.identity) return config;
   launch.assertActive();
+  if (launch.claim.localProgress) return config;
   const progress = readManagedProgress(launch, window.localStorage);
   if (!progress) return config;
   // The local snapshot is captured on relocate, before the slower config autosave.
