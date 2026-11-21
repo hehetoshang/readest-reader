@@ -33,6 +33,7 @@ import {
 import { clearDiscordPresence } from '@/utils/discord';
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
 import { emitReaderEvent } from '@/services/mokeBridge';
+import { getMokeLegacyProgress, getMokeLegacyResource } from '@/services/mokeLegacyProgress';
 import {
   isMokeRemoteSourceUrl,
   mokeRemoteSourceErrorDetail,
@@ -194,7 +195,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
 
     const mokeFiles = getMokeEmbeddedFiles();
     if (mokeOpenFilesRef.current === null) {
-      const launch = getMokeHostLaunch();
+      const launch = getMokeHostLaunch() ?? getMokeLegacyResource();
       mokeOpenFilesRef.current = launch
         ? [launch.sourcePath]
         : window.OPEN_WITH_FILES?.length
@@ -228,7 +229,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       // before the first NativeFile.open(). Explicitly grant that exact file
       // before importing it; this is a no-op on Android and harmless on
       // desktop, where the static AppData scope already covers the file.
-      if (!getMokeHostLaunch()) {
+      if (!getMokeHostLaunch() && !getMokeLegacyResource()) {
         if (files.includes(CLAIMED_DOWNLOAD_PATH)) throw new Error('reader_invalid_launch');
         await appService.allowPathsInScopes?.(files, false);
       }
@@ -400,7 +401,8 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
         return () => {};
       });
     }
-    if (!getMokeHostLaunch()) window.addEventListener('beforeunload', handleCloseBooks);
+    if (!getMokeHostLaunch() && !getMokeLegacyProgress())
+      window.addEventListener('beforeunload', handleCloseBooks);
     eventDispatcher.on('beforereload', handleCloseBooks);
     eventDispatcher.on('close-reader', handleCloseReaderToLibrary);
     eventDispatcher.on('quit-app', handleCloseBooks);
@@ -430,7 +432,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     console.log('Closing book', bookKey);
 
     const viewState = getViewState(bookKey);
-    if (getMokeHostLaunch()) {
+    if (getMokeHostLaunch() || getMokeLegacyProgress()) {
       await eventDispatcher.dispatch('flush-reader-relocate', { bookKey });
       await eventDispatcher.dispatch('stop-reader-autosave', { bookKey });
     }
@@ -490,7 +492,10 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   };
 
   const handleCloseReaderToLibrary = () => {
-    if (getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library') {
+    if (
+      getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library' ||
+      getMokeLegacyProgress()
+    ) {
       return handleCloseBooksToLibrary();
     }
     return handleCloseBooks(true);
@@ -520,7 +525,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     // TTS may continue headless. Non-main Tauri windows close their webview
     // below, but their per-window TTS dies with the window either way.
     await handleCloseBooks(true);
-    if (getMokeHostLaunch()) {
+    if (getMokeHostLaunch() || getMokeLegacyProgress()) {
       await navigateBackToLibrary();
       return;
     }
@@ -540,7 +545,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   };
 
   const handleCloseBook = async (bookKey: string) => {
-    if (getMokeHostLaunch()) {
+    if (getMokeHostLaunch() || getMokeLegacyProgress()) {
       // One claimed document owns one book. Drain every pane and local save
       // through the same close promise before the native window may leave.
       await handleCloseBooksToLibrary();

@@ -7,6 +7,7 @@ import Providers from '@/components/Providers';
 import { EnvProvider } from '@/context/EnvContext';
 import { bootstrapMokeLaunchContext } from '@/helpers/mokeLaunchContext';
 import { bootstrapMokeHostLaunch, hasMokeHostLookup } from '@/services/mokeHostLaunch';
+import { bootstrapMokeLegacyProgress } from '@/services/mokeLegacyProgress';
 
 import '../styles/globals.css';
 
@@ -19,11 +20,8 @@ export default function MokeReaderPage() {
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     let mounted = true;
-    if (!hasMokeHostLookup()) {
-      setReady(true);
-      return;
-    }
-    void bootstrapMokeHostLaunch().then(
+    const launch = hasMokeHostLookup() ? bootstrapMokeHostLaunch() : bootstrapMokeLegacyProgress();
+    void launch.then(
       () => {
         if (mounted) setReady(true);
       },

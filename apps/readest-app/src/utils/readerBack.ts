@@ -1,4 +1,5 @@
 import { getMokeHostLaunch, hasMokeHostLookup } from '@/services/mokeHostLaunch';
+import { getMokeLegacyProgress } from '@/services/mokeLegacyProgress';
 
 export async function closeReaderAndNavigateBack(
   closeReader: () => Promise<void>,
@@ -84,6 +85,14 @@ export async function navigateReaderBack({
   }
   if (hasMokeHostLookup()) throw new Error('reader_invalid_launch');
   const target = resolveReaderReturnTarget(search);
+  const legacy = getMokeLegacyProgress();
+  if (legacy) {
+    if (isReaderWindow || target.kind !== 'moke') throw new Error('reader_unsupported');
+    await legacy.returnToLibrary(() =>
+      runtimePlatform === 'ios' ? navigateDocument(target.path) : navigateMoke(target.path),
+    );
+    return;
+  }
   if (target.kind === 'readest') {
     if (recover) await closeReaderOrGoToLibrary();
     else navigateReadestLibrary();

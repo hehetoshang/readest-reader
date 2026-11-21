@@ -59,3 +59,125 @@ The host selects the file from its protected native download index. Bind the res
 Download read arguments carry no file path, URL, account, or file version. Reader supplies EPUB metadata from the validated claim and performs its normal EPUB parsing through bounded ranges. A claimed download uses no HTTP dispatch/settle commands, asset URLs, or filesystem scope grants. Online EPUBs retain the original exact-URL ticket lifecycle.
 
 The host registers each accepted download range against the reservation before opening or reading bytes. A success reply acknowledges the complete read and its terminal accounting. Closing/revocation stops acceptance of new reads and drains or cancels every admitted native read, then releases the pinned resource before reporting `returned/complete`. Reader waits for its dispatched reads and pending writes before observing closing. An invalid reply, IPC loss, or rejected read makes the Reader launch uncertain with no automatic read replay or success acknowledgement. Native recovery/revocation owns cleanup after document destruction or transport loss. The ordinary host closing/drain-ready hint still verifies the final accepted sequence.
+
+## Legacy mobile online EPUB progress
+
+`legacyMobileProgress` in the packaged Reader manifest advertises the optional
+`moke.readest.legacy-mobile-progress.v1` contract. It adds progress delivery to
+the existing single-WebView online EPUB entry on OHOS, Android and iOS. Moke
+opts in by adding `mokeLegacyProgressId` to the existing online Reader URL after
+creating a native pending launch. Keep the current file URL and return route.
+The lookup is an opaque ID of at most 128 characters. It grants no authority.
+Managed launches continue using `mokeLaunchId` and the existing managed contract.
+
+Moke creates the reservation from its current verified connection and open-book
+operation. Bind it to the complete original canonical Talebook base URL
+(including its path prefix), saved entry and revision, verified stable account,
+book ID, exact opened EPUB source, the live main WebView and the expected Reader
+document generation. Validate the actual IPC caller and its exact Reader launch
+at claim time. Reuse that native binding on every capture, save and return.
+Session replacement, logout, a different source or book, and document
+replacement cancel the reservation. A query value, reported book ID or Reader
+view key supplies no identity or permission.
+
+All arguments and reply properties use camelCase except fields inside the
+existing `moke.readest.progress.v1` position payload.
+
+| Command | Request | Reply |
+| --- | --- | --- |
+| `moke_reader_legacy_progress_claim` | `{ schema, launchId }` | `{ schema, launchId, status: "claimed" \| "local-only", onlineClaim }` from the verified native launch. A missing, unsupported, unverified or expired launch returns unavailable or rejects. |
+| `moke_reader_legacy_progress_capture` | `{ schema, launchId, claimToken, documentGeneration, sequence, payload }` | `{ schema, launchId, documentGeneration, sequence, status, lastSequence }` with the durable watermark defined below. |
+| `moke_reader_legacy_progress_close` | `{ schema, launchId, claimToken, documentGeneration, lastSequence }` | `{ schema, launchId, documentGeneration, status: "ready", lastSequence }` only after the exact final sequence is durable and the same document's return is armed. Sequence 0 means that no position was submitted. |
+
+`onlineClaim` is the existing `moke.readest.host-launch.v1` online reservation
+and sealed resource, without the `localProgress` member. Its `launchId` matches
+the outer ID. Reader uses the inner `claimToken` and `documentGeneration` for
+progress and the existing `moke_reader_resource_dispatch` and
+`moke_reader_resource_settle` commands for HTTP. The legacy lane does not call
+the managed progress or closing commands. Moke must bind both sets of
+commands to the same native reservation and exact caller. Keep the existing
+exact-URL, original/effective base, size, ETag and resource ticket validation.
+Reader also checks that the visible launch address, file and book match that
+sealed claim. Query metadata alone cannot open an HTTP resource.
+
+The capture payload has the usual progress schema, Reader marker and timestamp,
+Reader book/view identifiers and present location, section, chapter, page,
+total pages, percentage and fraction fields. Compare any legacy
+`moke_book_id` with the sealed book ID and construct the stored/remote identity
+from the reservation. Bound and validate the position and counters natively.
+Moke owns persistence and any Talebook write. An ACK means the host durably
+accepted the position or its eligible work for the original account. A remote
+POST can execute independently under that verified scope. The legacy contract
+does not attest to a file fingerprint or remote version for conditional writes.
+
+Reader keeps its immediate local snapshot. It stages genuine primary-view
+relocations and coalesces changed positions for 1.2 seconds. A repeated anchor,
+startup restoration and annotation preview do not create a new host write.
+Hidden `visibilitychange` and `pagehide` synchronously commit any pending render
+frame and invoke capture in the same event task. This can overlap a preceding
+capture waiting for its reply. The host must order admission and durable
+commit by sequence, allow gaps, and prevent an older completion or retry from
+overwriting a newer position. Deduplicate by reservation and sequence,
+requiring identical payload for a replay at the same sequence.
+
+- `saved` and `duplicate` echo the frame's sequence as `lastSequence` at
+  acceptance. `duplicate` acknowledges a previously accepted identical frame.
+- `superseded` reports a higher durable `lastSequence` in the same launch
+  and allows an earlier in-flight capture to settle.
+- `write-failed` is a definite failed transaction with `lastSequence` below
+  the frame's sequence. Reader can retry that identical frame twice.
+- Revocation, a missing or inconsistent receipt, or IPC failure prevents a
+  confirmed return. A timeout is ambiguous and does not cause a replay. The
+  latest local snapshot is retained. Host recovery retires the reservation.
+
+On explicit close, Reader finishes requested navigation, flushes the final
+rendered position, stops the book and finishes local saving. It submits the
+pending frame, freezes capture, waits for the submitted frames, stops new
+resource reads and cancels active reads before calling close with the highest
+issued sequence. Moke checks that exact durable sequence and current document,
+stops admitting captures and resource requests, and waits for every admitted
+resource ticket to settle before arming one return to `/library`. On Android/OHOS, Reader sends the existing
+`moke_navigate({ path: "/library" })` only after the ready receipt. Bind
+scheduled native navigation to the armed document and consume the permit
+at actual dispatch. On iOS, Reader assigns `/library` in the same WebView
+after the receipt. Bind the actual local document navigation to the same
+permit and consume it once. Release the reservation when the permitted
+return commits. A destroyed or replaced document cannot confirm close.
+The host owns cleanup for document loss, including final work already
+admitted for the verified original session. Hidden alone does not close.
+
+When the read source is verified but the stable account is unconfirmed, Moke
+can return `local-only` with the same sealed read contract. Reader uses its
+local snapshot and ordinary Back with zero native progress commands. When
+support or a verified read source is absent, a host-authorized local copy can
+use the existing local-file entry and ordinary Back. An unauthenticated
+remote URL follows the existing unavailable-book recovery. Local/downloaded
+files, desktop Reader windows and managed claims are outside this opt-in. A
+claimed Reader does not use unbound Back if its save or close is unconfirmed.
+
+### Integration check
+
+The Reader replacement-host matrix runs with
+`pnpm --filter @readest/readest-app exec vitest run --maxWorkers=1 src/__tests__/services/mokeLegacyProgress.test.ts`.
+It covers OHOS, Android and iOS, each with debounce, close, pagehide and
+hidden visibility. The real Reader bridge must deliver the final frame
+once to the host substitute. It also checks fallback, stale documents,
+same-frame retry and Back ordering.
+
+In Moke, first run the unchanged control from the fixed #48 checkout:
+
+```powershell
+$env:MOKE_READER_TEST_ROOT = (Resolve-Path ../readest-reader).Path
+node --test --experimental-strip-types tests/reader-single-webview-progress.test.mjs
+```
+
+That control expects the historical Reader to POST directly. The published
+gitlink passed 16 of 16 including the 12 online cases. With Reader #16 and
+the fixed host, the 12 online cases are expected to see zero POSTs. For the
+matching-host run, update that test to arm the real legacy launch path and
+route its command mock through Moke's actual capture/persistence handler.
+Keep its per-platform/per-trigger assertion of a single POST to the full
+original prefixed address with the last position and verified account.
+Assert zero Reader-owned POSTs and zero captures from unverified or stale
+launches, and gate Back on the exact close receipt. The physical-device
+run verifies the native caller, genuine lifecycle events and return.

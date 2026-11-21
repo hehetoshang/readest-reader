@@ -37,6 +37,18 @@
     "maxReadBytes": 1048576,
     "requiresHostLocalProgress": true
   },
+  "legacyMobileProgress": {
+    "schema": "moke.readest.legacy-mobile-progress.v1",
+    "queryLookup": "mokeLegacyProgressId",
+    "readClaim": "moke.readest.host-launch.v1",
+    "platforms": ["ohos", "android", "ios"],
+    "progressOwner": "host",
+    "commands": {
+      "claim": "moke_reader_legacy_progress_claim",
+      "capture": "moke_reader_legacy_progress_capture",
+      "close": "moke_reader_legacy_progress_close"
+    }
+  },
   "launchParameters": {
     "file": {
       "required": false,
@@ -46,6 +58,10 @@
     "mokeLaunchId": {
       "required": false,
       "description": "Native caller-bound claim lookup only; grants no authority"
+    },
+    "mokeLegacyProgressId": {
+      "required": false,
+      "description": "Optional lookup for native legacy online mobile progress. Never combine with mokeLaunchId."
     },
     "moke": { "required": true, "constant": "1" },
     "mokeBookId": { "required": false },

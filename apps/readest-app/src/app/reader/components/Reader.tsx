@@ -31,6 +31,7 @@ import { getLocale } from '@/utils/misc';
 import { initDayjs } from '@/utils/time';
 import { closeReaderAndNavigateBack } from '@/utils/readerBack';
 import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
+import { getMokeLegacyProgress } from '@/services/mokeLegacyProgress';
 import ReaderContent from './ReaderContent';
 
 /*
@@ -99,7 +100,10 @@ const Reader: React.FC<{ ids?: string }> = ({ ids }) => {
         setSideBarVisible(false);
       } else if (getIsNotebookVisible() && !isNotebookPinned) {
         setNotebookVisible(false);
-      } else if (getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library') {
+      } else if (
+        getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library' ||
+        getMokeLegacyProgress()
+      ) {
         void eventDispatcher.dispatch('close-reader').catch(() => {
           console.warn('[reader] Host return could not be confirmed');
         });

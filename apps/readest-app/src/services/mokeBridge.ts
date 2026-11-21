@@ -9,6 +9,7 @@
 import type { Book } from '@/types/book';
 import { mokeProgressStorageKey } from '@/helpers/mokeLaunchContext';
 import { getMokeHostLaunch, hasMokeHostLookup } from './mokeHostLaunch';
+import { getMokeLegacyProgress } from './mokeLegacyProgress';
 import { progressPayload, writeManagedProgress } from './mokeProgressIdentity';
 
 // ---------------------------------------------------------------------------
@@ -288,7 +289,7 @@ function progressNumberValue(value: unknown): number | undefined {
   return value;
 }
 
-function saveProgressToLocalStorage(data: Record<string, unknown>): void {
+function saveProgressToLocalStorage(data: Record<string, unknown>) {
   const mokeBookId = window.__MOKE_BOOK_ID;
   if (!mokeBookId) return;
   const serverUrl = typeof window.__MOKE_SERVER_URL === 'string' ? window.__MOKE_SERVER_URL : '';
@@ -316,6 +317,7 @@ function saveProgressToLocalStorage(data: Record<string, unknown>): void {
   } catch {
     // Local storage is best-effort (some ArkWeb custom-scheme contexts deny it).
   }
+  return payload;
 }
 
 // Public API
@@ -406,17 +408,29 @@ export function emitReaderEvent(
   }
   if (!isEmbedded()) return Promise.resolve();
 
+  const legacyProgress = getMokeLegacyProgress();
   const annotationNavigationEvent = event === 'page:changed' && isAnnotationNavigationEvent(data);
 
   // Correlated startup/annotation relocations are previews, not reading
   // progress. Skip local persistence for previews; genuine user turns have
   // no navigation marker and continue through the ordinary paths below.
   if (event === 'page:changed' && !annotationNavigationEvent) {
-    saveProgressToLocalStorage(data);
+    if (legacyProgress && (!legacyProgress.acceptsPosition() || navigationGeneration === undefined))
+      return Promise.resolve();
+    const payload = saveProgressToLocalStorage(data);
+    if (legacyProgress) {
+      if (payload) legacyProgress.stage(payload);
+      return Promise.resolve();
+    }
   }
 
   if (event === 'book:closed') {
     cancelMokeAnnotationNavigation();
+    if (legacyProgress) {
+      return legacyProgress.close().then(() => {
+        void _doEmit(event, data);
+      });
+    }
     return _doEmit(event, data);
   }
 

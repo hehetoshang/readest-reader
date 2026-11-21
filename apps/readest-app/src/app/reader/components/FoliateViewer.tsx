@@ -5,6 +5,7 @@ import { convertBlobUrlToDataUrl, BookDoc, getDirection } from '@/libs/document'
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
 import { getInitialReaderLocation } from '../utils/transientReader';
 import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
+import { getMokeLegacyProgress } from '@/services/mokeLegacyProgress';
 import { preserveInitialLocation, preserveReadingContext } from '../utils/initialLocation';
 import {
   captureMokeAnnotationNavigation,
@@ -286,7 +287,7 @@ const FoliateViewer: React.FC<{
   useEffect(() => {
     const flushForClose = async (event: CustomEvent) => {
       if (event.detail?.bookKey !== bookKey) return;
-      if (getMokeHostLaunch()?.claim.localProgress) {
+      if (getMokeHostLaunch()?.claim.localProgress || getMokeLegacyProgress()) {
         const view = viewRef.current;
         await view?.finishNavigation?.();
         initialRestore.current?.cancel();
@@ -296,13 +297,20 @@ const FoliateViewer: React.FC<{
       cancelRelocateScheduled();
       commitRelocate();
     };
+    const flushPendingRelocate = () => {
+      cancelRelocateScheduled();
+      commitRelocate();
+      return false;
+    };
     eventDispatcher.on('flush-reader-relocate', flushForClose);
+    eventDispatcher.onSync('flush-legacy-reader-relocate', flushPendingRelocate);
     // On unmount: flush any pending commit synchronously before tearing
     // down — otherwise the last page-turn before the user closes the
     // book could be lost. Then cancel the scheduled handle to be safe
     // against double-fire.
     return () => {
       eventDispatcher.off('flush-reader-relocate', flushForClose);
+      eventDispatcher.offSync('flush-legacy-reader-relocate', flushPendingRelocate);
       if (pendingRelocateRef.current) {
         try {
           commitRelocate();
@@ -723,9 +731,10 @@ const FoliateViewer: React.FC<{
       await import('foliate-js/view.js');
       const launch = getMokeHostLaunch();
       const managed = launch?.claim.localProgress;
+      const trackNavigation = !!managed || !!getMokeLegacyProgress();
       const view = wrappedFoliateView(
         document.createElement('foliate-view') as FoliateView,
-        managed ? (generation) => launch?.beginNavigation(generation) : undefined,
+        trackNavigation ? (generation) => launch?.beginNavigation(generation) : undefined,
       );
       view.id = `foliate-view-${bookKey}`;
       containerRef.current?.appendChild(view);
@@ -749,7 +758,7 @@ const FoliateViewer: React.FC<{
       }
 
       await view.open(bookDoc);
-      if (managed) {
+      if (trackNavigation) {
         const rendererLifetime = new AbortController();
         view.addEventListener('reading-close', () => rendererLifetime.abort(), { once: true });
         view.renderer.addEventListener(

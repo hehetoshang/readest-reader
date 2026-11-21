@@ -44,6 +44,18 @@ test('publishes the versioned Moke reader contract', () => {
     maxReadBytes: 1048576,
     requiresHostLocalProgress: true,
   });
+  assert.deepEqual(contract.legacyMobileProgress, {
+    schema: 'moke.readest.legacy-mobile-progress.v1',
+    queryLookup: 'mokeLegacyProgressId',
+    readClaim: 'moke.readest.host-launch.v1',
+    platforms: ['ohos', 'android', 'ios'],
+    progressOwner: 'host',
+    commands: {
+      claim: 'moke_reader_legacy_progress_claim',
+      capture: 'moke_reader_legacy_progress_capture',
+      close: 'moke_reader_legacy_progress_close',
+    },
+  });
   assert.ok(contract.nativeLibrary.registrationFunctions.includes('reader_invoke_handler'));
 });
 

@@ -455,7 +455,7 @@ export class MokeHostLaunch {
       await this.queue;
       await Promise.all([...this.pendingOperations]);
       if (this.state === 'unknown') throw uncertain();
-      for (const cancel of this.cancelRequests) cancel();
+      this.stopResourceRequests();
       this.canObserve = true;
       await this.observeClosing();
       return await terminal;
@@ -464,6 +464,11 @@ export class MokeHostLaunch {
       throw error;
     }
   }
+  stopResourceRequests(): void {
+    if (this.state === 'active') this.state = 'draining';
+    for (const cancel of this.cancelRequests) cancel();
+  }
+
   private observeClosing(): Promise<void> {
     if (this.observePromise) return this.observePromise;
     this.hinted = false;

@@ -86,7 +86,7 @@ export interface FoliateView extends HTMLElement {
   open: (book: BookDoc) => Promise<void>;
   close: () => void;
   init: (options: { lastLocation: string }) => void;
-  goTo: (target: string | number) => void;
+  goTo: (target: string | number, options?: { initial?: boolean }) => void;
   goToFraction: (fraction: number, options?: { initial?: boolean }) => void;
   getSectionFractions: () => number[];
   prev: (distance?: number) => void;
@@ -289,7 +289,7 @@ export const wrappedFoliateView = (
   // Foliate's runtime implementation returns a Promise. Returning a Promise
   // here is compatible with the void return type in TypeScript and lets callers
   // that know about the promise (e.g. tests, async handlers) await completion.
-  originalView.goTo = (target: string | number): Promise<void> => {
+  originalView.goTo = (target, options): Promise<void> => {
     if (finishing) return Promise.resolve();
     // Cross-section jumps can take seconds (the target section's images block
     // its iframe load); surface start/end so the viewer can show a spinner.
@@ -299,7 +299,9 @@ export const wrappedFoliateView = (
     // Recreating the same iframe before its load resolves strands init. A
     // repeated host restore is canceled by the pending initial-location owner;
     // a new jump waits for that first document before taking over.
-    const pending = accepted ? enqueue(() => originalGoTo(target), readingAction()) : undefined;
+    const pending = accepted
+      ? enqueue(() => originalGoTo(target), options?.initial ? 1 : readingAction())
+      : undefined;
     return Promise.resolve(pending).finally(() => {
       originalView.dispatchEvent(new CustomEvent('navigate-end'));
     });

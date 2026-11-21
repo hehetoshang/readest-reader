@@ -4,6 +4,7 @@ import { mokeTauriRangeFetch } from '@/services/mokeTauriRangeFetch';
 import type { RemoteFileTransport } from '@/utils/file';
 import { eventDispatcher } from '@/utils/event';
 import { getMokeHostLaunch, hasMokeHostLookup } from './mokeHostLaunch';
+import { getMokeLegacyResource } from './mokeLegacyProgress';
 import { parseLibraryBaseUrl } from './mokeLibraryBase';
 import { nativeHttpRequest } from './mokeNativeHttp';
 
@@ -137,7 +138,7 @@ export function validateMokeRemoteSource(
 }
 
 export function isMokeRemoteSourceUrl(sourceUrl: string): boolean {
-  const launch = getMokeHostLaunch();
+  const launch = getMokeHostLaunch() ?? getMokeLegacyResource();
   if (launch) return launch.isActive() && sourceUrl === launch.sourcePath;
   return false;
 }
@@ -165,7 +166,7 @@ export function mokeRemoteSourceErrorDetail(error: unknown): MokeRemoteSourceErr
 }
 
 async function defaultMokeFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const launch = getMokeHostLaunch();
+  const launch = getMokeHostLaunch() ?? getMokeLegacyResource();
   if (launch) {
     return nativeHttpRequest(
       url,
@@ -245,7 +246,7 @@ export function createMokeRemoteSourceTransport(
   sourceUrl: string,
   fetchImpl: MokeRemoteFetch = defaultMokeFetch,
 ): RemoteFileTransport | null {
-  const launch = getMokeHostLaunch();
+  const launch = getMokeHostLaunch() ?? getMokeLegacyResource();
   // Embedded HTTP always requires a native claim. An external query cannot
   // manufacture a source or fall back to the generic RemoteFile transport.
   if (
