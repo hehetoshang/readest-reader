@@ -4,6 +4,7 @@ export async function retryOnlineRead<T>(
   retryable: (error: unknown) => boolean,
   signal: AbortSignal,
   timeoutMs = 15_000,
+  awaitTransportTerminal = false,
 ): Promise<T> {
   const aborted = () => new DOMException('Online read cancelled', 'AbortError');
   for (let attempt = 0; ; attempt++) {
@@ -23,9 +24,13 @@ export async function retryOnlineRead<T>(
       rejectAbort(error);
       controller.abort(error);
     }, timeoutMs);
+    const reading = read(controller.signal);
     try {
-      return await Promise.race([read(controller.signal), stopped]);
+      return await Promise.race([reading, stopped]);
     } catch (error) {
+      // Managed native IO has its own bounded cancellation lifecycle. A UI
+      // timeout must not start another attempt while the original ticket lacks ACK.
+      if (awaitTransportTerminal && !signal.aborted) await reading.catch(() => undefined);
       if (signal.aborted) throw aborted();
       const canRetry = retryable(error);
       const timedOut = error instanceof DOMException && error.name === 'TimeoutError';

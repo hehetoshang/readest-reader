@@ -4,6 +4,9 @@ import { useSearchParams } from 'next/navigation';
 import { convertBlobUrlToDataUrl, BookDoc, getDirection } from '@/libs/document';
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
 import { getInitialReaderLocation } from '../utils/transientReader';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
+import { getMokeLegacyProgress } from '@/services/mokeLegacyProgress';
+import { preserveInitialLocation, preserveReadingContext } from '../utils/initialLocation';
 import {
   captureMokeAnnotationNavigation,
   type MokeAnnotationNavigationContext,
@@ -148,6 +151,9 @@ const FoliateViewer: React.FC<{
   const librarySearchHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [scrollMargins, setScrollMargins] = useState({ top: 0, bottom: 0 });
   const docLoaded = useRef(false);
+  const stylesheetLoads = useRef(new WeakMap<Document, Promise<void>>());
+  const initialRestore = useRef<ReturnType<typeof preserveInitialLocation> | null>(null);
+  const readingContext = useRef<ReturnType<typeof preserveReadingContext> | null>(null);
 
   const autoScroll = useAutoScroll(bookKey, viewRef);
   const { registerSpeedListeners, overlayVisible: speedOverlayVisible } =
@@ -156,6 +162,8 @@ const FoliateViewer: React.FC<{
   // A pending anti-flash timer must not fire setNavigating on an unmounted component.
   useEffect(() => {
     return () => {
+      initialRestore.current?.cancel();
+      readingContext.current?.cancel();
       if (navSpinnerTimerRef.current) clearTimeout(navSpinnerTimerRef.current);
       if (librarySearchHighlightTimerRef.current) {
         clearTimeout(librarySearchHighlightTimerRef.current);
@@ -205,8 +213,10 @@ const FoliateViewer: React.FC<{
   const pendingRelocateRef = useRef<{
     event: CustomEvent;
     mokeNavigation: MokeAnnotationNavigationContext | null;
+    navigationGeneration?: number;
   } | null>(null);
   const relocateRafRef = useRef<number | null>(null);
+  const closingRelocateRef = useRef(false);
   const cancelRelocateScheduled = useCallback(() => {
     const id = relocateRafRef.current;
     if (id == null) return;
@@ -218,6 +228,11 @@ const FoliateViewer: React.FC<{
     const pending = pendingRelocateRef.current;
     pendingRelocateRef.current = null;
     if (!pending) return;
+    if (
+      pending.navigationGeneration !== undefined &&
+      pending.navigationGeneration !== viewRef.current?.getNavigationGeneration?.()
+    )
+      return;
     const detail = pending.event.detail;
     const atEnd = viewRef.current?.renderer.atEnd || false;
     const { current, next, total } = detail.location as PageInfo;
@@ -234,15 +249,22 @@ const FoliateViewer: React.FC<{
       detail.range,
       detail.fraction,
       pending.mokeNavigation,
+      pending.navigationGeneration,
     );
   }, [bookKey, setProgress]);
 
   const progressRelocateHandler = (event: Event) => {
+    if (closingRelocateRef.current) return;
+    // Font/layout relocates during cold restore are provisional. Persist the
+    // requested location until final positioning or the first reading action.
+    if (initialRestore.current && !initialRestore.current.signal.aborted) return;
+    if (readingContext.current?.provisional) return;
     // Always stash the latest detail; if another rAF is already pending
     // it'll pick this up and the intermediate states are skipped.
     pendingRelocateRef.current = {
       event: event as CustomEvent,
       mokeNavigation: captureMokeAnnotationNavigation(),
+      navigationGeneration: viewRef.current?.getNavigationGeneration?.() ?? undefined,
     };
     // requestAnimationFrame is paused while the WebView is backgrounded, so the
     // rAF-coalesced commit below would never run during background TTS - which
@@ -263,11 +285,32 @@ const FoliateViewer: React.FC<{
   };
 
   useEffect(() => {
+    const flushForClose = async (event: CustomEvent) => {
+      if (event.detail?.bookKey !== bookKey) return;
+      if (getMokeHostLaunch()?.claim.localProgress || getMokeLegacyProgress()) {
+        const view = viewRef.current;
+        await view?.finishNavigation?.();
+        initialRestore.current?.cancel();
+        readingContext.current?.cancel();
+      }
+      closingRelocateRef.current = true;
+      cancelRelocateScheduled();
+      commitRelocate();
+    };
+    const flushPendingRelocate = () => {
+      cancelRelocateScheduled();
+      commitRelocate();
+      return false;
+    };
+    eventDispatcher.on('flush-reader-relocate', flushForClose);
+    eventDispatcher.onSync('flush-legacy-reader-relocate', flushPendingRelocate);
     // On unmount: flush any pending commit synchronously before tearing
     // down — otherwise the last page-turn before the user closes the
     // book could be lost. Then cancel the scheduled handle to be safe
     // against double-fire.
     return () => {
+      eventDispatcher.off('flush-reader-relocate', flushForClose);
+      eventDispatcher.offSync('flush-legacy-reader-relocate', flushPendingRelocate);
       if (pendingRelocateRef.current) {
         try {
           commitRelocate();
@@ -390,7 +433,14 @@ const FoliateViewer: React.FC<{
       }
 
       if (!bookData?.isFixedLayout) {
-        mountAdditionalFonts(detail.doc, isCJKLang(bookData.book?.primaryLanguage));
+        stylesheetLoads.current.set(
+          detail.doc,
+          mountAdditionalFonts(
+            detail.doc,
+            isCJKLang(bookData.book?.primaryLanguage),
+            readingContext.current?.signal,
+          ),
+        );
       }
 
       getLoadedFonts().forEach((font) => {
@@ -679,7 +729,13 @@ const FoliateViewer: React.FC<{
     const openBook = async () => {
       console.log('Opening book', bookKey);
       await import('foliate-js/view.js');
-      const view = wrappedFoliateView(document.createElement('foliate-view') as FoliateView);
+      const launch = getMokeHostLaunch();
+      const managed = launch?.claim.localProgress;
+      const trackNavigation = !!managed || !!getMokeLegacyProgress();
+      const view = wrappedFoliateView(
+        document.createElement('foliate-view') as FoliateView,
+        trackNavigation ? (generation) => launch?.beginNavigation(generation) : undefined,
+      );
       view.id = `foliate-view-${bookKey}`;
       containerRef.current?.appendChild(view);
 
@@ -702,6 +758,21 @@ const FoliateViewer: React.FC<{
       }
 
       await view.open(bookDoc);
+      if (trackNavigation) {
+        const rendererLifetime = new AbortController();
+        view.addEventListener('reading-close', () => rendererLifetime.abort(), { once: true });
+        view.renderer.addEventListener(
+          'relocate',
+          (event) =>
+            view.noteRendererNavigation?.((event as CustomEvent<{ reason: string }>).detail.reason),
+          { capture: true, signal: rendererLifetime.signal },
+        );
+      }
+      readingContext.current = preserveReadingContext(
+        view,
+        stylesheetLoads.current,
+        () => !!initialRestore.current && !initialRestore.current.signal.aborted,
+      );
       // make sure we can listen renderer events after opening book
       viewRef.current = view;
       setFoliateView(bookKey, view);
@@ -803,15 +874,81 @@ const FoliateViewer: React.FC<{
       const thisId = bookKey.split('-')[0];
       const overrideLocation = cfiParam && primaryId === thisId ? cfiParam : null;
 
-      const lastLocation = getInitialReaderLocation(
-        overrideLocation ?? config.location,
-        bookData?.book,
-        bookDoc.toc,
-      );
+      const restore = managed?.restore;
+      const hostPosition = restore?.position;
+      const locator = hostPosition?.['location'];
+      const href = hostPosition?.['section_href'];
+      const suppliedLocation =
+        typeof locator === 'string' && locator.startsWith('epubcfi(')
+          ? locator
+          : typeof href === 'string' && href
+            ? href
+            : null;
+      const resolved = suppliedLocation ? view.resolveNavigation(suppliedLocation) : null;
+      const usableRestore =
+        resolved &&
+        Number.isInteger(resolved.index) &&
+        resolved.index >= 0 &&
+        resolved.index < bookDoc.sections.length;
+      const lastLocation = restore
+        ? usableRestore
+          ? suppliedLocation
+          : null
+        : getInitialReaderLocation(
+            overrideLocation ?? config.location,
+            bookData?.book,
+            bookDoc.toc,
+          );
       if (lastLocation) {
-        await view.init({ lastLocation });
+        if (!view.isFixedLayout) {
+          initialRestore.current = preserveInitialLocation(
+            view,
+            lastLocation,
+            stylesheetLoads.current,
+          );
+        }
+        try {
+          await view.init({ lastLocation });
+          const completeLayout = initialRestore.current?.complete().then(
+            () => true,
+            (error) => {
+              console.warn('Unable to finish initial reading location', error);
+              return false;
+            },
+          );
+          if (restore) {
+            // Leave navigation available while fonts load. If navigation takes
+            // ownership, the launch drops the obsolete generation-1 receipt.
+            void Promise.resolve(completeLayout ?? true).then((laidOut) => {
+              const doc = view.renderer
+                .getContents()
+                .find(({ index }) => index === resolved?.index)?.doc;
+              let applied =
+                laidOut &&
+                view.isConnected &&
+                !!doc &&
+                view.renderer.primaryIndex === resolved?.index;
+              const requiresAnchor =
+                suppliedLocation?.startsWith('epubcfi(') || suppliedLocation?.includes('#');
+              if (applied && doc && requiresAnchor) {
+                try {
+                  applied = !!resolved?.anchor?.(doc);
+                } catch {
+                  applied = false;
+                }
+              }
+              launch?.acknowledgeRestore(applied ? 'applied' : 'unavailable');
+            });
+          }
+        } catch (error) {
+          initialRestore.current?.cancel();
+          if (!restore) throw error;
+          if (!view.hasUserNavigation) await view.goToFraction(0, { initial: true });
+          launch?.acknowledgeRestore('unavailable');
+        }
       } else {
-        await view.goToFraction(0);
+        await view.goToFraction(0, { initial: true });
+        if (restore) launch?.acknowledgeRestore('unavailable');
       }
       // The reader is showing a deep-link target, not the user's actual reading
       // position. Mark the view as a preview so progress writers (auto-save,

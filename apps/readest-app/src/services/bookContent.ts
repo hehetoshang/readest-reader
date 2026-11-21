@@ -5,6 +5,8 @@ import { getDir, getLocalBookFilename } from '@/utils/book';
 import { isContentURI, isValidURL } from '@/utils/misc';
 import { isPseStreamFileName } from './opds/pseStream';
 import { isFeedBookUrl } from '@/services/rss/feedBookUrl';
+import { CLAIMED_DOWNLOAD_PATH } from './mokeHostLaunch';
+import { managedBookIdentity } from './mokeProgressIdentity';
 
 export type BookContentSource =
   | { kind: 'managed'; path: string; base: 'Books'; legacy?: boolean }
@@ -44,6 +46,13 @@ export async function resolveBookContentSource(
   fs: FileSystem,
   book: Book,
 ): Promise<BookContentSource> {
+  if (book.url === CLAIMED_DOWNLOAD_PATH) {
+    const identity = managedBookIdentity(book.url);
+    return identity && identity === book.mokeIdentity
+      ? { kind: 'url', path: book.url, base: 'None' }
+      : { kind: 'missing' };
+  }
+
   // Prefer the managed copy when it exists; book.filePath is device-local and
   // can outlive a prior in-place/import mode.
   const managedPath = getLocalBookFilename(book);

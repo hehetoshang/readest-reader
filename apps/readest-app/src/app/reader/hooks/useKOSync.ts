@@ -6,6 +6,7 @@ import { useBookProgress } from '@/store/readerProgressStore';
 import { useBookDataStore } from '@/store/bookDataStore';
 import { useTranslation } from '@/hooks/useTranslation';
 import { KOSyncClient, KoSyncProgress } from '@/services/sync/KOSyncClient';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 import { Book, BookProgress, FIXED_LAYOUT_FORMATS } from '@/types/book';
 import type { KOSyncSettings, SystemSettings } from '@/types/settings';
 import { BookDoc } from '@/libs/document';
@@ -87,7 +88,7 @@ export const useKOSync = (bookKey: string, provider: KosyncProgressProvider = ko
   const progress = useBookProgress(bookKey);
 
   useEffect(() => {
-    const config = provider.selectConfig(settings);
+    const config = getMokeHostLaunch() ? null : provider.selectConfig(settings);
     if (!config) {
       setKOSyncClient(null);
       return;

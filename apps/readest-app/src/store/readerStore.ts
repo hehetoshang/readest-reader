@@ -1,4 +1,5 @@
 import { isMokeRemoteSourceUrl } from '@/services/mokeRemoteSource';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 import { create } from 'zustand';
 
 import {
@@ -113,6 +114,7 @@ interface ReaderStore {
     range: Range,
     fraction: number,
     mokeNavigation?: MokeAnnotationNavigationContext | null,
+    navigationGeneration?: number,
   ) => void;
   getProgress: (key: string) => BookProgress | null;
   setView: (key: string, view: FoliateView) => void;
@@ -185,6 +187,8 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     isPrimary = true,
     reload = false,
   ) => {
+    const launch = getMokeHostLaunch();
+    if (launch && !launch.isActive()) return;
     // 防重入：已经正在加载或已初始化（且不是显式 reload）时直接跳过，
     // 避免 book:opened 事件被重复发送。
     const viewState = get().viewStates[key];
@@ -293,7 +297,11 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
       // scans every chapter and defeats on-demand reading on a cold open.
       const onlineSource = isMokeRemoteSourceUrl(book.url || '');
       // Load cached book navigation (TOC + section fragments) or compute and persist.
-      if (!onlineSource && book.format === 'EPUB' && bookDoc.rendition?.layout !== 'pre-paginated') {
+      if (
+        !onlineSource &&
+        book.format === 'EPUB' &&
+        bookDoc.rendition?.layout !== 'pre-paginated'
+      ) {
         const cachedNav = await cachedNavPromise;
         if (isBookNavCacheCurrent(cachedNav) && process.env['NODE_ENV'] === 'production') {
           hydrateBookNav(bookDoc, cachedNav);
@@ -469,7 +477,10 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     range: Range,
     fraction: number,
     mokeNavigation?: MokeAnnotationNavigationContext | null,
+    navigationGeneration?: number,
   ) => {
+    const launch = getMokeHostLaunch();
+    if (launch && !launch.isActive()) return;
     const id = key.split('-')[0]!;
     const bookData = useBookDataStore.getState().booksData[id];
     const viewState = get().viewStates[key];
@@ -478,11 +489,12 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     const pageInfo = bookData.isFixedLayout ? section : pageinfo;
     const progress: [number, number] = [pageInfo.current + 1, pageInfo.total];
     const progressPercentage = Math.round((progress[0] / progress[1]) * 100);
+    const persistPosition = !launch?.claim.localProgress || navigationGeneration !== undefined;
 
     // Lightweight library update — O(1) lookup, no array copy, no refreshGroups
     const { getBookByHash, updateBookProgress } = useLibraryStore.getState();
     const existingBook = getBookByHash(id);
-    if (existingBook) {
+    if (existingBook && persistPosition) {
       let newReadingStatus = existingBook.readingStatus;
       if (existingBook.readingStatus === 'unread') {
         newReadingStatus = undefined;
@@ -497,7 +509,7 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
     // config — secondary views in a parallel layout shouldn't overwrite
     // it. Skip the bookDataStore write entirely when not primary to spare
     // its subscribers a re-render.
-    if (viewState.isPrimary) {
+    if (viewState.isPrimary && persistPosition) {
       useBookDataStore.setState((state) => {
         const existing = state.booksData[id];
         if (!existing) return state;
@@ -534,7 +546,12 @@ export const useReaderStore = create<ReaderStore>((set, get) => ({
         },
         mokeNavigation ?? null,
       ),
-    );
+      viewState.isPrimary ? navigationGeneration : undefined,
+    ).catch(() => {
+      // Relocate is synchronous. Preserve uncertainty if local persistence or
+      // host delivery fails, and never turn an unobserved rejection into return.
+      launch?.markUnknown();
+    });
 
     // Write progress to the standalone store. This is the only setState on
     // the hot swipe path that the previous implementation routed through

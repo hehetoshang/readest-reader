@@ -24,6 +24,9 @@ export function mokeProgressStorageKey(serverUrl: string, mokeBookId: string): s
 /** Bootstrap the Moke reader globals before React starts. */
 export function bootstrapMokeLaunchContext(): void {
   const params = new URLSearchParams(window.location.search);
+  // Controlled launches derive every authority/restore field from native claim.
+  // Keep this branch self-contained: the function is also serialized by legacy bootstraps.
+  if (params.has('mokeLaunchId')) return;
   if (params.get('moke') !== '1') return;
 
   // Cross-document View Transitions are attached to the navigation itself,

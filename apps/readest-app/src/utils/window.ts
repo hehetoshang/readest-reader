@@ -3,6 +3,7 @@ import { emitTo, TauriEvent } from '@tauri-apps/api/event';
 import { exit } from '@tauri-apps/plugin-process';
 import { type as osType } from '@tauri-apps/plugin-os';
 import { eventDispatcher } from './event';
+import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 
 const APP_NAME = 'Readest';
 
@@ -76,6 +77,7 @@ export const tauriHandleOnCloseWindow = async (callback: () => void) => {
       return;
     }
     await callback();
+    await getMokeHostLaunch()?.close();
     if (currentWindow.label.startsWith('reader')) {
       await emitTo('main', 'close-reader-window', { label: currentWindow.label });
       setTimeout(() => currentWindow.destroy(), 300);

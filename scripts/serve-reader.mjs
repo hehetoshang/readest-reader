@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, resolve, sep } from 'node:path';
 
 const host = process.env.READEST_READER_HOST || '127.0.0.1';
 const port = Number.parseInt(process.env.READEST_READER_PORT || '3001', 10);
@@ -28,8 +28,8 @@ const server = createServer((request, response) => {
   if (pathname === '/readest' || pathname === '/readest/' || pathname === '/readest/reader') {
     pathname = '/readest/reader.html';
   }
-  const candidate = normalize(join(root, pathname));
-  if (!candidate.startsWith(`${root}/`) || !existsSync(candidate) || !statSync(candidate).isFile()) {
+  const candidate = resolve(root, `.${pathname}`);
+  if (!candidate.startsWith(`${root}${sep}`) || !existsSync(candidate) || !statSync(candidate).isFile()) {
     response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     response.end('Not found');
     return;
