@@ -38,6 +38,12 @@
     "maxReadBytes": 1048576,
     "requiresHostLocalProgress": true
   },
+  "downloadedBookIdentity": {
+    "schema": "moke.readest.downloaded-book-identity.v1",
+    "queryLookup": "mokeDownloadIdentityId",
+    "claimCommand": "moke_reader_claim_downloaded_book_identity",
+    "progressOwner": "reader-local"
+  },
   "managedMobileBack": {
     "schema": "moke.readest.managed-mobile-back.v1",
     "windowProperty": "__MOKE_MANAGED_BACK__",

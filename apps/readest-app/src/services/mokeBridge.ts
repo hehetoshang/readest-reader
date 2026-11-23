@@ -9,6 +9,7 @@
 import type { Book } from '@/types/book';
 import { mokeProgressStorageKey } from '@/helpers/mokeLaunchContext';
 import { getMokeHostLaunch, hasMokeHostLookup } from './mokeHostLaunch';
+import { getMokeDownloadedBookIdentity } from './mokeDownloadedBookIdentity';
 import { getMokeLegacyProgress } from './mokeLegacyProgress';
 import { progressPayload, writeManagedProgress } from './mokeProgressIdentity';
 
@@ -407,6 +408,7 @@ export function emitReaderEvent(
     return _doEmit(event, data);
   }
   if (!isEmbedded()) return Promise.resolve();
+  if (event === 'page:changed' && getMokeDownloadedBookIdentity()) return Promise.resolve();
 
   const legacyProgress = getMokeLegacyProgress();
   const annotationNavigationEvent = event === 'page:changed' && isAnnotationNavigationEvent(data);

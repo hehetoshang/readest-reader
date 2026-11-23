@@ -46,6 +46,49 @@ An explicit close stops new navigation, flushes the final rendered frame and dra
 
 Legacy local paths and formats outside the claimed EPUB lane continue to use Reader-local progress and existing presentation settings. Earlier unscoped progress keys remain in local storage. Unversioned TB-455 claims retain their original relay shape. Reader makes no direct Talebook progress POST.
 
+## Local downloaded book identity
+
+Probe `downloadedBookIdentity.schema === 'moke.readest.downloaded-book-identity.v1'`
+in `readestlib::MOKE_READER_MANIFEST_JSON`. Open a new Reader document at
+`/readest/reader?moke=1&mokeDownloadIdentityId=<launchId>`. Use a single
+lookup of 1–128 URL-safe ASCII characters (`A–Z a–z 0–9 . _ ~ -`).
+Reader calls `moke_reader_claim_downloaded_book_identity({ launchId })`
+once before mounting its providers. The native reply carries these fields.
+
+```json
+{
+  "schema": "moke.readest.downloaded-book-identity.v1",
+  "sourcePath": "C:/Moke/downloads/sample.azw",
+  "identityKey": "opaque-native-download-version-key"
+}
+```
+
+Reserve the exact canonical local file and its real index entry for the
+intended WebView and top-level document. Before replying, verify the caller,
+the document generation, the reservation's lifetime and the current file
+binding. Consume the lookup once, revoke obsolete reservations when opening
+a replacement document, and reject stale, mismatched and replayed requests
+with `reader_invalid_launch`. Reader rejects invalid native replies and mixed
+query parameters with the same error and discards the binding on `pagehide`.
+Provide an absolute POSIX or Windows drive path and a stable opaque key of
+1–512 UTF-16 code units. The file must be readable via the existing native
+local-file path and scope policy.
+
+Keep the key stable for the same verified entry and file version. Derive it
+from the complete original library address, confirmed account where available,
+index book ID, index format and file version. Use a device-local entry key for
+legacy downloads with unverified ownership. A new binding uses a new key when
+any of the identity fields change. In particular, keep a MOBI entry and an AZW
+entry separate when their bytes and parser results are identical.
+
+Reader opens the claimed path with the existing local parser and scopes its
+configuration to the native key. It can inherit presentation settings from
+an anonymous content-hash config while leaving that config and its progress
+and notes intact. It flushes local progress before normal window close or
+mobile return to `/library`. This lane persists progress on the device and
+emits no host position events or EPUB progress IPC. Use the existing managed
+EPUB claim for host-owned progress.
+
 ## ArkWeb system Back for a managed mobile EPUB
 
 Look for `managedMobileBack.schema === 'moke.readest.managed-mobile-back.v1'` in the packaged Reader manifest. A live Reader with a validated `localProgress.returnTarget === 'mobile-library'` claim exposes `window.__MOKE_MANAGED_BACK__` in the top-level document. Both methods take `(launchId: string, documentGeneration: number)` from the host's reservation for that document. Serialize those two values as JavaScript literals. The methods accept no route, source identity or claim token.

@@ -1,8 +1,13 @@
 import type { Book, BookConfig } from '@/types/book';
 import { getMokeHostLaunch, type MokeHostLaunch } from './mokeHostLaunch';
+import {
+  downloadedBookIdentityForPath,
+  getMokeDownloadedBookIdentity,
+} from './mokeDownloadedBookIdentity';
 import { md5 } from '@/utils/md5';
 
 const PREFIX = 'moke-reader-progress-v2:';
+const managedBookHash = (identity: string) => md5(`moke-progress-v1:${identity}`);
 
 export function managedBookIdentity(sourceUrl: string): string | null {
   const launch = getMokeHostLaunch();
@@ -12,14 +17,29 @@ export function managedBookIdentity(sourceUrl: string): string | null {
 }
 
 export function managedBookFields(sourceUrl: string, contentHash: string) {
-  const identity = managedBookIdentity(sourceUrl);
+  const identity = downloadedBookIdentityForPath(sourceUrl) ?? managedBookIdentity(sourceUrl);
   return identity
     ? {
-        hash: md5(`moke-progress-v1:${identity}`),
+        hash: managedBookHash(identity),
         mokeIdentity: identity,
         mokeContentHash: contentHash,
       }
     : { hash: contentHash };
+}
+
+export function assertBookProgressBinding(book: Book): MokeHostLaunch | null {
+  if (getMokeDownloadedBookIdentity()) {
+    const identity = downloadedBookIdentityForPath(book.filePath);
+    if (!identity || book.mokeIdentity !== identity || book.hash !== managedBookHash(identity)) {
+      throw new Error('reader_invalid_launch');
+    }
+    return null;
+  }
+  if (!book.mokeIdentity) return null;
+  const launch = getMokeHostLaunch();
+  if (!launch || launch.identity !== book.mokeIdentity) throw new Error('reader_invalid_launch');
+  launch.assertActive();
+  return launch;
 }
 
 export function progressPayload(

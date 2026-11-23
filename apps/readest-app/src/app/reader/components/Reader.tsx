@@ -32,6 +32,7 @@ import { initDayjs } from '@/utils/time';
 import { closeReaderAndNavigateBack } from '@/utils/readerBack';
 import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
 import { getMokeLegacyProgress } from '@/services/mokeLegacyProgress';
+import { getMokeDownloadedBookIdentity } from '@/services/mokeDownloadedBookIdentity';
 import ReaderContent from './ReaderContent';
 
 /*
@@ -102,7 +103,8 @@ const Reader: React.FC<{ ids?: string }> = ({ ids }) => {
         setNotebookVisible(false);
       } else if (
         getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library' ||
-        getMokeLegacyProgress()
+        getMokeLegacyProgress() ||
+        getMokeDownloadedBookIdentity()
       ) {
         void eventDispatcher.dispatch('close-reader').catch(() => {
           console.warn('[reader] Host return could not be confirmed');

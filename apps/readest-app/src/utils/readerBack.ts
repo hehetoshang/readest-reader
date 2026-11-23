@@ -1,5 +1,6 @@
 import { getMokeHostLaunch, hasMokeHostLookup } from '@/services/mokeHostLaunch';
 import { getMokeLegacyProgress } from '@/services/mokeLegacyProgress';
+import { getMokeDownloadedBookIdentity } from '@/services/mokeDownloadedBookIdentity';
 
 export async function closeReaderAndNavigateBack(
   closeReader: () => Promise<void>,
@@ -86,6 +87,12 @@ export async function navigateReaderBack({
     return;
   }
   if (hasMokeHostLookup()) throw new Error('reader_invalid_launch');
+  if (getMokeDownloadedBookIdentity()) {
+    if (isReaderWindow) await closeReaderOrGoToLibrary();
+    else if (runtimePlatform === 'ios') navigateDocument('/library');
+    else await navigateMoke('/library');
+    return;
+  }
   const target = resolveReaderReturnTarget(search);
   const legacy = getMokeLegacyProgress();
   if (legacy) {

@@ -26,7 +26,7 @@ export function bootstrapMokeLaunchContext(): void {
   const params = new URLSearchParams(window.location.search);
   // Controlled launches derive every authority/restore field from native claim.
   // Keep this branch self-contained: the function is also serialized by legacy bootstraps.
-  if (params.has('mokeLaunchId')) return;
+  if (params.has('mokeLaunchId') || params.has('mokeDownloadIdentityId')) return;
   if (params.get('moke') !== '1') return;
 
   // Cross-document View Transitions are attached to the navigation itself,

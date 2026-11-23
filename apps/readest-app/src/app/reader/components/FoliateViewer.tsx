@@ -5,6 +5,7 @@ import { convertBlobUrlToDataUrl, BookDoc, getDirection } from '@/libs/document'
 import { BOOK_IDS_SEPARATOR } from '@/services/constants';
 import { getInitialReaderLocation } from '../utils/transientReader';
 import { getMokeHostLaunch } from '@/services/mokeHostLaunch';
+import { getMokeDownloadedBookIdentity } from '@/services/mokeDownloadedBookIdentity';
 import { getMokeLegacyProgress } from '@/services/mokeLegacyProgress';
 import { preserveInitialLocation, preserveReadingContext } from '../utils/initialLocation';
 import {
@@ -287,7 +288,11 @@ const FoliateViewer: React.FC<{
   useEffect(() => {
     const flushForClose = async (event: CustomEvent) => {
       if (event.detail?.bookKey !== bookKey) return;
-      if (getMokeHostLaunch()?.claim.localProgress || getMokeLegacyProgress()) {
+      if (
+        getMokeHostLaunch()?.claim.localProgress ||
+        getMokeLegacyProgress() ||
+        getMokeDownloadedBookIdentity()
+      ) {
         const view = viewRef.current;
         await view?.finishNavigation?.();
         initialRestore.current?.cancel();

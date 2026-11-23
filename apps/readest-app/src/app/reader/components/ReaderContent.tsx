@@ -53,6 +53,10 @@ import LocalSendManager from '@/components/localsend/LocalSendManager';
 import BooksGrid from './BooksGrid';
 import { runTransientReaderBootstrap } from '../utils/transientReader';
 import { CLAIMED_DOWNLOAD_PATH, getMokeHostLaunch } from '@/services/mokeHostLaunch';
+import {
+  downloadedBookIdentityForPath,
+  getMokeDownloadedBookIdentity,
+} from '@/services/mokeDownloadedBookIdentity';
 import { installMokeManagedBack } from '@/services/mokeManagedBack';
 
 // These dialogs pull in metadata, sync-provider, and AI integrations that are
@@ -195,8 +199,9 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     if (hasHandledOpenFiles.current) return;
 
     const mokeFiles = getMokeEmbeddedFiles();
+    const download = getMokeDownloadedBookIdentity();
     if (mokeOpenFilesRef.current === null) {
-      const launch = getMokeHostLaunch() ?? getMokeLegacyResource();
+      const launch = download ?? getMokeHostLaunch() ?? getMokeLegacyResource();
       mokeOpenFilesRef.current = launch
         ? [launch.sourcePath]
         : window.OPEN_WITH_FILES?.length
@@ -232,6 +237,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
       // desktop, where the static AppData scope already covers the file.
       if (!getMokeHostLaunch() && !getMokeLegacyResource()) {
         if (files.includes(CLAIMED_DOWNLOAD_PATH)) throw new Error('reader_invalid_launch');
+        if (download) downloadedBookIdentityForPath(files[0]);
         await appService.allowPathsInScopes?.(files, false);
       }
 
@@ -258,7 +264,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
           // hashes them once. Opening and hashing here first doubled every
           // preflight/range request and produced a second import attempt after
           // the first Range failure. Local files retain the dedupe fast path.
-          if (!isMokeRemoteSourceUrl(file)) {
+          if (!isMokeRemoteSourceUrl(file) && !download) {
             try {
               const fileobj = await appService.openFile(file, 'None');
               try {
@@ -411,7 +417,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
             handleCloseBooksToLibrary,
           )
         : undefined;
-    if (!launch && !getMokeLegacyProgress())
+    if (!launch && !getMokeLegacyProgress() && !getMokeDownloadedBookIdentity())
       window.addEventListener('beforeunload', handleCloseBooks);
     eventDispatcher.on('beforereload', handleCloseBooks);
     eventDispatcher.on('close-reader', handleCloseReaderToLibrary);
@@ -468,7 +474,8 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
 
   const saveConfigAndCloseBook = async (bookKey: string, keepTTSAlive = false) => {
     const viewState = getViewState(bookKey);
-    if (getMokeHostLaunch() || getMokeLegacyProgress()) await flushBookForClose(bookKey);
+    if (getMokeHostLaunch() || getMokeLegacyProgress() || getMokeDownloadedBookIdentity())
+      await flushBookForClose(bookKey);
     await closeBookView(bookKey, keepTTSAlive);
     await saveBookConfig(bookKey);
 
@@ -490,7 +497,10 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   ) => {
     await navigateReaderBack({
       search: window.location.search,
-      runtimePlatform: window.__MOKE_RUNTIME_PLATFORM,
+      runtimePlatform:
+        getMokeDownloadedBookIdentity() && appService?.isIOSApp
+          ? 'ios'
+          : window.__MOKE_RUNTIME_PLATFORM,
       recover,
       prepareManagedMobileReturn,
       isReaderWindow:
@@ -515,7 +525,8 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   const handleCloseReaderToLibrary = () => {
     if (
       getMokeHostLaunch()?.claim.localProgress?.returnTarget === 'mobile-library' ||
-      getMokeLegacyProgress()
+      getMokeLegacyProgress() ||
+      getMokeDownloadedBookIdentity()
     ) {
       return handleCloseBooksToLibrary();
     }
@@ -565,7 +576,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
     // TTS may continue headless. Non-main Tauri windows close their webview
     // below, but their per-window TTS dies with the window either way.
     await handleCloseBooks(true);
-    if (getMokeHostLaunch() || getMokeLegacyProgress()) {
+    if (getMokeHostLaunch() || getMokeLegacyProgress() || getMokeDownloadedBookIdentity()) {
       await navigateBackToLibrary();
       return;
     }
@@ -585,7 +596,7 @@ const ReaderContent: React.FC<{ ids?: string; settings: SystemSettings }> = ({ i
   };
 
   const handleCloseBook = async (bookKey: string) => {
-    if (getMokeHostLaunch() || getMokeLegacyProgress()) {
+    if (getMokeHostLaunch() || getMokeLegacyProgress() || getMokeDownloadedBookIdentity()) {
       // One claimed document owns one book. Drain every pane and local save
       // through the same close promise before the native window may leave.
       await handleCloseBooksToLibrary();

@@ -1,10 +1,15 @@
 import { SystemSettings } from '@/types/settings';
 import {
+  assertBookProgressBinding,
   managedBookFields,
   presentationConfig,
   restoreManagedConfig,
 } from './mokeProgressIdentity';
-import { CLAIMED_DOWNLOAD_PATH, getMokeHostLaunch } from './mokeHostLaunch';
+import { CLAIMED_DOWNLOAD_PATH } from './mokeHostLaunch';
+import {
+  downloadedBookIdentityForPath,
+  getMokeDownloadedBookIdentity,
+} from './mokeDownloadedBookIdentity';
 import { FileSystem, AppPlatform, BaseDir, OsPlatform } from '@/types/system';
 import {
   Book,
@@ -465,6 +470,11 @@ export async function importBook(
   } = options;
   const claimedDownload = file === CLAIMED_DOWNLOAD_PATH;
   if (claimedDownload && !transient) throw new Error('reader_invalid_launch');
+  const localDownload = getMokeDownloadedBookIdentity();
+  if (localDownload) {
+    if (!transient) throw new Error('reader_invalid_launch');
+    downloadedBookIdentityForPath(file);
+  }
   const isPseStream = typeof file === 'string' && isPseStreamFileName(file);
 
   let loadedBook: BookDoc | undefined;
@@ -646,6 +656,7 @@ export async function importBook(
     const primaryLanguage = getPrimaryLanguage(loadedBook.metadata.language);
     const book: Book = {
       ...managedFields,
+      ...(localDownload && { filePath: localDownload.sourcePath }),
       format,
       metaHash,
       title: formatTitle(loadedBook.metadata.title),
@@ -1017,6 +1028,7 @@ export async function loadBookConfig(
   book: Book,
   settings: SystemSettings,
 ): Promise<BookConfig> {
+  assertBookProgressBinding(book);
   const globalViewSettings = {
     ...settings.globalViewSettings,
     ...(FIXED_LAYOUT_FORMATS.has(book.format) ? DEFAULT_FIXED_LAYOUT_VIEW_SETTINGS : {}),
@@ -1061,10 +1073,7 @@ export async function saveBookConfig(
   config: BookConfig,
   settings?: SystemSettings,
 ): Promise<void> {
-  const launch = book.mokeIdentity ? getMokeHostLaunch() : null;
-  if (book.mokeIdentity && (!launch || launch.identity !== book.mokeIdentity))
-    throw new Error('reader_invalid_launch');
-  launch?.assertActive();
+  const launch = assertBookProgressBinding(book);
   let serializedConfig: string;
   if (settings) {
     const globalViewSettings = {

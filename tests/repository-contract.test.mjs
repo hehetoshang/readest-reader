@@ -45,6 +45,12 @@ test('publishes the versioned Moke reader contract', () => {
     maxReadBytes: 1048576,
     requiresHostLocalProgress: true,
   });
+  assert.deepEqual(contract.downloadedBookIdentity, {
+    schema: 'moke.readest.downloaded-book-identity.v1',
+    queryLookup: 'mokeDownloadIdentityId',
+    claimCommand: 'moke_reader_claim_downloaded_book_identity',
+    progressOwner: 'reader-local',
+  });
   assert.deepEqual(contract.managedMobileBack, {
     schema: 'moke.readest.managed-mobile-back.v1',
     windowProperty: '__MOKE_MANAGED_BACK__',
