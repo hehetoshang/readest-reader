@@ -17,6 +17,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useReaderStore } from '@/store/readerStore';
+import { getMokeLegacyProgress } from '@/services/mokeLegacyProgress';
 import {
   beginMokeAnnotationNavigation,
   cancelMokeAnnotationNavigation,
@@ -48,7 +49,7 @@ function getPrimaryKey(bookKeys: string[]): string | null {
   return bookKeys.find((k) => viewStates[k]?.isPrimary) ?? bookKeys[0] ?? null;
 }
 
-function executeCommand(payload: CommandPayload, bookKeys: string[]): unknown {
+function executeCommand(payload: CommandPayload, bookKeys: string[], initial = false): unknown {
   const key = getPrimaryKey(bookKeys);
   const view = key ? useReaderStore.getState().getView(key) : null;
 
@@ -58,6 +59,11 @@ function executeCommand(payload: CommandPayload, bookKeys: string[]): unknown {
         throw new Error('go_to_fraction requires a fraction number');
       }
       if (!view) throw new Error('No active reader view');
+      if (initial) {
+        return Promise.resolve(view.goToFraction(payload.fraction, { initial: true })).then(() => ({
+          fraction: payload.fraction,
+        }));
+      }
       view.goToFraction(payload.fraction);
       return { fraction: payload.fraction };
     }
@@ -67,7 +73,8 @@ function executeCommand(payload: CommandPayload, bookKeys: string[]): unknown {
         throw new Error('go_to_href requires an href string');
       }
       if (!view) throw new Error('No active reader view');
-      return Promise.resolve(view.goTo(payload.href)).then(() => ({ href: payload.href }));
+      const navigation = initial ? view.goTo(payload.href, { initial: true }) : view.goTo(payload.href);
+      return Promise.resolve(navigation).then(() => ({ href: payload.href }));
     }
 
     case 'go_to_location': {
@@ -75,7 +82,10 @@ function executeCommand(payload: CommandPayload, bookKeys: string[]): unknown {
         throw new Error('go_to_location requires a location string');
       }
       if (!view) throw new Error('No active reader view');
-      return Promise.resolve(view.goTo(payload.location)).then(() => ({
+      const navigation = initial
+        ? view.goTo(payload.location, { initial: true })
+        : view.goTo(payload.location);
+      return Promise.resolve(navigation).then(() => ({
         location: payload.location,
       }));
     }
@@ -237,9 +247,19 @@ export function useMokeCommandListener(bookKeys: string[]) {
         if (!key || !useReaderStore.getState().getView(key)) {
           throw new Error('No active reader view');
         }
+        // This is the one-shot launch restore, not a new host/user command.
+        // A jump or turn accepted while init was pending already owns the
+        // location; appending the old restore would otherwise undo it.
+        if (useReaderStore.getState().getView(key)?.hasUserNavigation) {
+          restoredRef.current = true;
+          if (timer) window.clearTimeout(timer);
+          timer = null;
+          reportResultSafe(true, { restored: false, reason: 'superseded-by-reading-action' });
+          return;
+        }
         restoring = true;
         beginMokeAnnotationNavigation();
-        const result = executeCommand(command, bookKeysRef.current);
+        const result = executeCommand(command, bookKeysRef.current, !!getMokeLegacyProgress());
         void Promise.resolve(result).then(() => {
           if (cancelled) return;
           restoring = false;

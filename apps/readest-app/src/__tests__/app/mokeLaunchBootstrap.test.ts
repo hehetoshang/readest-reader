@@ -22,7 +22,7 @@ describe('Moke launch bootstrap', () => {
   });
 
   it('retries a failed online import in place without reloading or pre-hashing twice', () => {
-    expect(readerContentSource).toMatch(/if \(!isMokeRemoteSourceUrl\(file\)\)/);
+    expect(readerContentSource).toMatch(/if \(!isMokeRemoteSourceUrl\(file\) && !download\)/);
     expect(readerContentSource).toMatch(/setOpenAttempt\(\(attempt\) => attempt \+ 1\)/);
     expect(readerContentSource).not.toMatch(/window\.location\.reload\(\)/);
     expect(readerContentSource).toMatch(/does not support byte-range reading[\s\S]*Download/);

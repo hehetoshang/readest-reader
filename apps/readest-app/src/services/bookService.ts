@@ -1,4 +1,15 @@
 import { SystemSettings } from '@/types/settings';
+import {
+  assertBookProgressBinding,
+  managedBookFields,
+  presentationConfig,
+  restoreManagedConfig,
+} from './mokeProgressIdentity';
+import { CLAIMED_DOWNLOAD_PATH } from './mokeHostLaunch';
+import {
+  downloadedBookIdentityForPath,
+  getMokeDownloadedBookIdentity,
+} from './mokeDownloadedBookIdentity';
 import { FileSystem, AppPlatform, BaseDir, OsPlatform } from '@/types/system';
 import {
   Book,
@@ -457,6 +468,13 @@ export async function importBook(
     lookupIndex,
     osPlatform,
   } = options;
+  const claimedDownload = file === CLAIMED_DOWNLOAD_PATH;
+  if (claimedDownload && !transient) throw new Error('reader_invalid_launch');
+  const localDownload = getMokeDownloadedBookIdentity();
+  if (localDownload) {
+    if (!transient) throw new Error('reader_invalid_launch');
+    downloadedBookIdentityForPath(file);
+  }
   const isPseStream = typeof file === 'string' && isPseStreamFileName(file);
 
   let loadedBook: BookDoc | undefined;
@@ -565,20 +583,28 @@ export async function importBook(
       if (!loadedBook) {
         throw new Error('Unsupported or corrupted book file');
       }
+      if (claimedDownload && format !== 'EPUB') throw new Error('reader_download_unavailable');
       normalizeMetadataIsbn(loadedBook.metadata);
       const metadataTitle = formatTitle(loadedBook.metadata.title);
       if (!metadataTitle || !metadataTitle.trim() || metadataTitle === filename) {
         loadedBook.metadata.title = getBaseFilename(filename);
       }
     } catch (error) {
-      throw new Error(`Failed to open the book file: ${(error as Error).message || error}`, { cause: error });
+      throw new Error(`Failed to open the book file: ${(error as Error).message || error}`, {
+        cause: error,
+      });
     }
 
-    const hash = isPseStream
+    const contentHash = isPseStream
       ? md5(file as string)
       : usedNativeParser
         ? nativeHash!
         : await partialMD5(fileobj!);
+    const managedFields =
+      typeof file === 'string' ? managedBookFields(file, contentHash) : { hash: contentHash };
+    // Reader stores and view keys split IDs on '-'. A deterministic hex ID keeps
+    // those conventions while separating equal bytes from different libraries.
+    const { hash } = managedFields;
 
     // PDF metadata is often generic boilerplate (e.g. every PowerPoint export
     // is titled "PowerPoint Presentation" by the same author), so metadata
@@ -629,7 +655,8 @@ export async function importBook(
 
     const primaryLanguage = getPrimaryLanguage(loadedBook.metadata.language);
     const book: Book = {
-      hash,
+      ...managedFields,
+      ...(localDownload && { filePath: localDownload.sourcePath }),
       format,
       metaHash,
       title: formatTitle(loadedBook.metadata.title),
@@ -657,6 +684,7 @@ export async function importBook(
         if (series.total) book.metadata.seriesTotal = parseInt(series.total, 10);
       }
     }
+    if (existingBook && 'mokeIdentity' in managedFields) Object.assign(existingBook, managedFields);
     // update book metadata when reimporting the same book
     if (existingBook && metaHashMatch) {
       // MetaHash match (different file, same book): override metadata and hash
@@ -842,7 +870,7 @@ export async function importBook(
       book.url = file as string;
       if (existingBook) existingBook.url = file as string;
     } else if (typeof file === 'string') {
-      if (isValidURL(file)) {
+      if (claimedDownload || isValidURL(file)) {
         book.url = file;
         if (existingBook) existingBook.url = file;
       } else if (transient || inPlace) {
@@ -1000,6 +1028,7 @@ export async function loadBookConfig(
   book: Book,
   settings: SystemSettings,
 ): Promise<BookConfig> {
+  assertBookProgressBinding(book);
   const globalViewSettings = {
     ...settings.globalViewSettings,
     ...(FIXED_LAYOUT_FORMATS.has(book.format) ? DEFAULT_FIXED_LAYOUT_VIEW_SETTINGS : {}),
@@ -1009,8 +1038,31 @@ export async function loadBookConfig(
     if (await fs.exists(getConfigFilename(book), 'Books')) {
       str = (await fs.readFile(getConfigFilename(book), 'Books', 'text')) as string;
     }
-    return deserializeConfig(str, globalViewSettings, DEFAULT_BOOK_SEARCH_CONFIG);
-  } catch {
+    let config = deserializeConfig(str, globalViewSettings, DEFAULT_BOOK_SEARCH_CONFIG);
+    if (book.mokeIdentity && book.mokeContentHash) {
+      const originalBook = { ...book, hash: book.mokeContentHash };
+      let presentation: Partial<BookConfig> = {};
+      if (await fs.exists(getConfigFilename(originalBook), 'Books')) {
+        const raw = (await fs.readFile(getConfigFilename(originalBook), 'Books', 'text')) as string;
+        presentation = presentationConfig(
+          deserializeConfig(raw, globalViewSettings, DEFAULT_BOOK_SEARCH_CONFIG),
+        );
+      }
+      const scoped = JSON.parse(str) as Partial<BookConfig>;
+      config = {
+        ...presentation,
+        ...config,
+        viewSettings: {
+          ...globalViewSettings,
+          ...presentation.viewSettings,
+          ...scoped.viewSettings,
+        },
+      };
+      config = restoreManagedConfig(book, config);
+    }
+    return config;
+  } catch (error) {
+    if (book.mokeIdentity) throw error;
     return deserializeConfig('{}', globalViewSettings, DEFAULT_BOOK_SEARCH_CONFIG);
   }
 }
@@ -1021,6 +1073,7 @@ export async function saveBookConfig(
   config: BookConfig,
   settings?: SystemSettings,
 ): Promise<void> {
+  const launch = assertBookProgressBinding(book);
   let serializedConfig: string;
   if (settings) {
     const globalViewSettings = {
@@ -1031,7 +1084,8 @@ export async function saveBookConfig(
   } else {
     serializedConfig = serializeRawConfig(config);
   }
-  await fs.writeFile(getConfigFilename(book), 'Books', serializedConfig);
+  const writing = fs.writeFile(getConfigFilename(book), 'Books', serializedConfig);
+  await (launch ? launch.trackOperation(writing) : writing);
 }
 
 export async function loadBookNav(fs: FileSystem, book: Book): Promise<BookNav | null> {

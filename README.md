@@ -22,7 +22,7 @@ Excluded:
 - browser, Calibre, KOReader and Windows thumbnail extensions;
 - release/store metadata and unrelated platform packaging automation.
 
-This is an embedded component, not a second ebook server. `mokeServerUrl` is the Talebook server selected in Moke; Reader itself is served from Moke's bundled static assets.
+Reader is served from Moke's bundled static assets. For controlled online books, native claim IPC supplies the exact resource and original library identity; query parameters cannot authorize HTTP or select the progress owner.
 
 ## Requirements
 
@@ -47,7 +47,7 @@ pnpm start
 
 Open `http://127.0.0.1:3001/readest/reader`. A browser can verify the static shell; opening a host-authorized local file requires a Tauri host implementing the contract below.
 
-The paginator's text-fade regression runs in a separate headless browser lane:
+The paginator's text-fade and initial-location regressions run in a separate headless browser lane:
 
 ```bash
 pnpm exec playwright install chromium --only-shell
@@ -55,6 +55,8 @@ pnpm test:reader-browser
 ```
 
 It uses synthetic chapters with the pinned Foliate renderer at desktop and mobile viewport sizes. It verifies instant text visibility and retained page-turn movement, without requiring a Talebook account or native host. This lane does not replace Moke integration or physical e-ink checks.
+
+Cold restoration also checks real CFI ranges across late font styles, reflow and repeated host restore requests. Jumps and page turns run in request order across initialization and slow document loads. A pending restoration yields to subsequent page turns and jumps; the latest reading context remains protected until the participating documents' fonts settle. The one-shot host launch restore yields to accepted reading actions. Close cancels queued navigation and font/layout waits.
 
 For development with hot reload:
 
@@ -94,15 +96,18 @@ No credential is required to build Reader. Put developer-specific values only in
 
 ## Moke contract
 
-The machine-readable contract is `contract/moke-reader.v1.json`; the detailed protocol is in `docs/MOKE_CONTRACT.md`.
+The packaged manifest is `contract/moke-reader.v1.json`. The frozen host protocol and synthetic fixtures are `contract/reader-host-launch.v1.json` and `contract/fixtures/reader-host-launch.v1.json`; see `docs/MOKE_CONTRACT.md` and `docs/READER_HOST_LAUNCH.md`.
 
 At a high level:
 
 1. Moke serves the build at `/readest` and opens `/readest/reader`.
-2. Desktop passes the approved local file through `window.OPEN_WITH_FILES`; single-WebView mobile targets pass repeated `file` query parameters.
-3. Moke passes optional book/progress context through `mokeBookId`, `mokeServerUrl` and `mokeRestoreProgress`.
-4. Reader emits lifecycle/progress/error events through `ext_reader_event`.
-5. On single-WebView targets Reader saves progress directly to the selected Talebook server with Tauri HTTP, `credentials: include`, and the host cookie jar.
+2. Controlled online launches carry `moke=1&mokeLaunchId=...`. Reader claims the native caller-bound launch before mounting its providers, making HTTP requests or restoring progress.
+3. Each HEAD/GET reserves a ticket for the sealed URL. Native EOF or confirmed cancellation and the original settle ACK are required before releasing it.
+4. Local progress/config/view identities use the original full library base, account, book, format and claimed file version. Equal book bytes in `/a` and `/b` have independent positions. Anonymous legacy positions are preserved without being restored into either library.
+5. Managed progress goes through `moke_reader_progress` with increasing sequences. The host owns remote persistence; Reader never adds a direct POST or borrows a global server to obtain remote restore data.
+6. Closing drains local writes and trailing progress, then waits for an authoritative terminal `moke_reader_closing` result. A drain-ready event requests re-observation; timeout, abort and document destruction do not prove return.
+
+Legacy host-authorized local files remain supported. They retain Reader-local snapshots and desktop host events. Reader makes no direct progress POST. The fixed Moke `21a2142` backend supports the controlled window lane only on Linux with the full packaged capability group; Windows, mobile and full-document ownership remain gated. A claim currently contains no remote progress snapshot. The optional host-local progress extension adds native restore receipts, navigation generations and persistence acknowledgements. See [the host integration guide](docs/HOST_LOCAL_PROGRESS.md).
 
 Moke must register `readestlib` plugins, protocols and invoke handlers, and must list Reader plugin crates as direct Cargo dependencies so Tauri can discover their ACL manifests.
 

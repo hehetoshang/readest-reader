@@ -20,6 +20,10 @@ use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_fs::FsExt;
 
+/// The same packaged manifest consumed by Moke's native capability gate.
+/// This declaration is not a launch grant; Moke owns caller/document validation.
+pub const MOKE_READER_MANIFEST_JSON: &str = include_str!("../../../../contract/moke-reader.v1.json");
+
 #[cfg(desktop)]
 use tauri::{Listener, Url};
 mod clip_url;
@@ -516,6 +520,7 @@ fn open_reader_window_with_debug(
             window.__MOKE_EINK = {eink_js};
             window.__MOKE_DEBUG_PANEL = {debug_panel_js};
             window.__MOKE_BOOK_ID = {moke_book_id_js};
+            window.__MOKE_SERVER_URL = null;
             window.__MOKE_SOURCE_SERVER_URL = {source_server_url_js};
             window.__MOKE_RESTORE_PROGRESS = {restore_progress_js};
             window.addEventListener('DOMContentLoaded', function() {{

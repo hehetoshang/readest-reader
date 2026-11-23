@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// The reader persists progress to the Moke server through the Tauri HTTP
-// plugin. Stub it so the unit environment stays free of Tauri internals.
+// Verify the legacy bridge never posts progress through the HTTP plugin.
 const { fetchMock, invokeMock } = vi.hoisted(() => ({
   fetchMock: vi.fn(),
   invokeMock: vi.fn(),
@@ -21,7 +20,7 @@ import {
 
 const SERVER_URL = 'http://192.168.1.5:8080';
 
-describe('mokeBridge server-side progress persistence', () => {
+describe('legacy Moke local progress and annotation correlation', () => {
   beforeEach(() => {
     fetchMock.mockReset();
     fetchMock.mockResolvedValue(
@@ -47,88 +46,6 @@ describe('mokeBridge server-side progress persistence', () => {
     window.__MOKE_SERVER_URL = null;
     window.__MOKE_BOOK_ID = null;
     window.__MOKE_RESTORE_PROGRESS = null;
-  });
-
-  it('posts page:changed progress to the Moke server after the debounce window', async () => {
-    void emitReaderEvent('page:changed', {
-      book_id: 'abc123',
-      view_key: 'abc123-1',
-      location: 'epubcfi(/6/4!/4/2)',
-      page: 12,
-      total_pages: 100,
-      progress: 12,
-      fraction: 0.12,
-      section_href: 'chapter-2.xhtml',
-      chapter: '第二章',
-    });
-
-    await vi.advanceTimersByTimeAsync(1300);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const call = fetchMock.mock.calls[0]!;
-    const url = call[0];
-    const init = call[1];
-    expect(url).toBe(`${SERVER_URL}/api/book/42/progress`);
-    expect((init as RequestInit).method).toBe('POST');
-    expect((init as RequestInit).credentials).toBe('include');
-
-    const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.progress.schema).toBe('moke.readest.progress.v1');
-    expect(body.progress.reader).toBe('readest');
-    expect(body.progress.moke_book_id).toBe('42');
-    expect(body.progress.reader_book_id).toBe('abc123');
-    expect(body.progress.view_key).toBe('abc123-1');
-    expect(body.progress.location).toBe('epubcfi(/6/4!/4/2)');
-    expect(body.progress.page).toBe(12);
-    expect(body.progress.total_pages).toBe(100);
-    expect(body.progress.fraction).toBe(0.12);
-    expect(body.progress.section_href).toBe('chapter-2.xhtml');
-    expect(body.progress.chapter).toBe('第二章');
-    expect(typeof body.progress.updated_at).toBe('string');
-  });
-
-  it('emits a sanitized observable error without interrupting reading', async () => {
-    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ err: 'service.unavailable' }), {
-        status: 503,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
-    const errors: Array<Record<string, unknown>> = [];
-    window.addEventListener(
-      'moke:reader-error',
-      ((event: CustomEvent<Record<string, unknown>>) => {
-        errors.push(event.detail);
-      }) as unknown as EventListener,
-      { once: true },
-    );
-
-    void emitReaderEvent('page:changed', {
-      book_id: 'abc123',
-      location: 'epubcfi(/6/4!/4/2)',
-    });
-    await vi.advanceTimersByTimeAsync(1300);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(errors).toEqual([
-      {
-        code: 'progress.http.503',
-        operation: 'progress.save',
-        status: 503,
-        retryable: true,
-      },
-    ]);
-    expect(invokeMock).toHaveBeenCalledWith(
-      'ext_reader_event',
-      expect.objectContaining({
-        event: 'reader:error',
-        data: expect.objectContaining({ code: 'progress.http.503', status: 503 }),
-      }),
-    );
-    expect(JSON.stringify(errors)).not.toContain(SERVER_URL);
-    warning.mockRestore();
   });
 
   it('does not persist when no server URL is forwarded', async () => {
@@ -204,9 +121,7 @@ describe('mokeBridge server-side progress persistence', () => {
     });
     await vi.advanceTimersByTimeAsync(1_300);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string);
-    expect(body.progress.location).toBe('epubcfi(/6/6)');
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(
       JSON.parse(localStorage.getItem(mokeProgressStorageKey(SERVER_URL, '42'))!).location,
     ).toBe('epubcfi(/6/6)');
@@ -263,7 +178,10 @@ describe('mokeBridge server-side progress persistence', () => {
 
     void emitReaderEvent('page:changed', { book_id: 'abc123', location: 'after-failure' });
     await vi.advanceTimersByTimeAsync(1_300);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(localStorage.getItem(mokeProgressStorageKey(SERVER_URL, '42'))!).location,
+    ).toBe('after-failure');
 
     fetchMock.mockClear();
     window.__MOKE_RESTORE_PROGRESS = {
@@ -277,24 +195,10 @@ describe('mokeBridge server-side progress persistence', () => {
 
     void emitReaderEvent('page:changed', { book_id: 'abc123', location: 'after-timeout' });
     await vi.advanceTimersByTimeAsync(1_300);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it('debounces rapid page turns and saves only the latest location', async () => {
-    void emitReaderEvent('page:changed', { book_id: 'abc123', location: 'epubcfi(/6/1)', page: 1 });
-    await vi.advanceTimersByTimeAsync(400);
-    void emitReaderEvent('page:changed', { book_id: 'abc123', location: 'epubcfi(/6/2)', page: 2 });
-    await vi.advanceTimersByTimeAsync(400);
-    void emitReaderEvent('page:changed', { book_id: 'abc123', location: 'epubcfi(/6/3)', page: 3 });
-
-    await vi.advanceTimersByTimeAsync(1300);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const call = fetchMock.mock.calls[0]!;
-    const init = call[1] as RequestInit;
-    const body = JSON.parse(init.body as string);
-    expect(body.progress.location).toBe('epubcfi(/6/3)');
-    expect(body.progress.page).toBe(3);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(localStorage.getItem(mokeProgressStorageKey(SERVER_URL, '42'))!).location,
+    ).toBe('after-timeout');
   });
 
   it('recycles annotation navigation state when the book closes', async () => {
@@ -310,31 +214,14 @@ describe('mokeBridge server-side progress persistence', () => {
     expect(captureMokeAnnotationNavigation()).toBeNull();
   });
 
-  it('flushes pending progress when the book closes', async () => {
-    void emitReaderEvent('page:changed', {
-      book_id: 'abc123',
-      location: 'epubcfi(/6/4!/4/2)',
-      page: 7,
-    });
-
-    await emitReaderEvent('book:closed', { book_id: 'abc123' });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const call = fetchMock.mock.calls[0]!;
-    const url = call[0];
-    expect(url).toBe(`${SERVER_URL}/api/book/42/progress`);
-  });
-  it('flushes pending progress when the reader page is hidden', async () => {
-    void emitReaderEvent('page:changed', {
-      book_id: 'abc123',
-      location: 'epubcfi(/6/10)',
-      page: 10,
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-
+  it('preserves the final local frame across close and pagehide without a direct POST', async () => {
+    void emitReaderEvent('page:changed', { location: 'epubcfi(/6/10)', page: 10 });
+    await emitReaderEvent('book:closed', {});
     window.dispatchEvent(new Event('pagehide'));
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.runAllTimersAsync();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(localStorage.getItem(mokeProgressStorageKey(SERVER_URL, '42'))!),
+    ).toMatchObject({ schema: 'moke.readest.progress.v1', location: 'epubcfi(/6/10)', page: 10 });
   });
 });
