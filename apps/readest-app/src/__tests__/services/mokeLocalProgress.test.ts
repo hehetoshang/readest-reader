@@ -6,6 +6,7 @@ import {
   localProgressFixture,
   reservation,
 } from '@/__tests__/helpers/hostLaunchFixture';
+import { validateReaderClaim } from '@/services/mokeHostLaunch';
 import {
   progressPayload,
   readManagedProgress,
@@ -28,6 +29,26 @@ describe('claimed host local progress v1', () => {
     expect(() =>
       claimFixture(undefined, localProgressFixture({ restore: { id: 'other', position } })),
     ).toThrow();
+  });
+
+  it('accepts a book-start instruction only with an explicit null restore', () => {
+    const claim = claimFixture();
+    const local = localProgressFixture({ restore: null });
+    const validate = (localProgress: unknown) =>
+      validateReaderClaim({ ...claim, localProgress }, claim.launchId).localProgress;
+    expect(validate(local)).toEqual(local);
+    expect(validate({ ...local, startAtBeginning: true })).toEqual({
+      ...local,
+      startAtBeginning: true,
+    });
+    for (const changes of [
+      { startAtBeginning: true, restore: localProgressFixture().restore },
+      { startAtBeginning: true, restore: undefined },
+      { startAtBeginning: false },
+      { startAtBeginning: 'true' },
+    ]) {
+      expect(() => validate({ ...local, ...changes })).toThrow('reader_invalid_launch');
+    }
   });
 
   it('isolates account, original prefix and version, preserving old local snapshots', () => {

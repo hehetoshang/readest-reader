@@ -867,12 +867,14 @@ const FoliateViewer: React.FC<{
       // export link), use it as the initial location instead of the saved one.
       // Only applies to the primary book — first id in the route's `ids` —
       // so parallel views don't all jump to the same CFI.
+      const startAtBeginning = managed?.startAtBeginning === true;
       const cfiParam = searchParams?.get('cfi');
       const idsParam =
         searchParams?.get('ids') ?? window.location.pathname.split('/reader/')[1] ?? '';
       const primaryId = idsParam.split(BOOK_IDS_SEPARATOR).filter(Boolean)[0];
       const thisId = bookKey.split('-')[0];
-      const overrideLocation = cfiParam && primaryId === thisId ? cfiParam : null;
+      const overrideLocation =
+        !startAtBeginning && cfiParam && primaryId === thisId ? cfiParam : null;
 
       const restore = managed?.restore;
       const hostPosition = restore?.position;
@@ -890,15 +892,17 @@ const FoliateViewer: React.FC<{
         Number.isInteger(resolved.index) &&
         resolved.index >= 0 &&
         resolved.index < bookDoc.sections.length;
-      const lastLocation = restore
-        ? usableRestore
-          ? suppliedLocation
-          : null
-        : getInitialReaderLocation(
-            overrideLocation ?? config.location,
-            bookData?.book,
-            bookDoc.toc,
-          );
+      // Either host directive owns initial positioning, including when it selects the book start.
+      const lastLocation =
+        restore || startAtBeginning
+          ? usableRestore
+            ? suppliedLocation
+            : null
+          : getInitialReaderLocation(
+              overrideLocation ?? config.location,
+              bookData?.book,
+              bookDoc.toc,
+            );
       if (lastLocation) {
         if (!view.isFixedLayout) {
           initialRestore.current = preserveInitialLocation(

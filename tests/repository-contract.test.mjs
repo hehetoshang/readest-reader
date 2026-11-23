@@ -30,6 +30,7 @@ test('publishes the versioned Moke reader contract', () => {
     claimMember: 'localProgress',
     format: 'epub',
     progressOwner: 'host',
+    startAtBeginning: true,
     commands: {
       restoreReceipt: 'moke_reader_acknowledge_restore',
       beginNavigation: 'moke_reader_begin_navigation',

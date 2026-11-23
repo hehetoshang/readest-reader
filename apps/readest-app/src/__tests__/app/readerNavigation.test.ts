@@ -62,10 +62,13 @@ it('returns a failed operation to its caller and keeps subsequent navigation usa
 });
 
 it('distinguishes automatic initial positioning and canceled restores from new reading actions', async () => {
-  const { view } = createView();
+  const announce = vi.fn();
+  const { view } = createView(announce);
   await view.init({ lastLocation: 'saved' });
   await view.goToFraction(0, { initial: true });
   expect(view.hasUserNavigation).toBe(false);
+  expect(view.getNavigationGeneration?.()).toBeNull();
+  expect(announce).not.toHaveBeenCalled();
   const ignoreDuplicate = (event: Event) => event.preventDefault();
   view.addEventListener('navigate-start', ignoreDuplicate);
   await view.goTo('saved');
@@ -73,6 +76,7 @@ it('distinguishes automatic initial positioning and canceled restores from new r
   view.removeEventListener('navigate-start', ignoreDuplicate);
   await view.goToFraction(0);
   expect(view.hasUserNavigation).toBe(true);
+  expect(announce).toHaveBeenCalledExactlyOnceWith(2);
 });
 
 it('settles queued callers on close without starting another document load', async () => {

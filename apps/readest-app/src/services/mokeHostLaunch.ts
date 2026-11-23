@@ -43,6 +43,7 @@ export interface ReaderClaim extends ReaderReservation {
     format: 'epub';
     returnTarget: 'desktop-window' | 'mobile-library';
     restore: { id: string; position: Record<string, unknown> } | null;
+    startAtBeginning?: true;
   };
   resource: OnlineEpubResource | DownloadedEpubResource;
 }
@@ -70,6 +71,9 @@ function validateLocalProgress(value: unknown, bookId: string): ReaderClaim['loc
   )
     throw invalid();
   const restore = value['restore'];
+  const startAtBeginning = value['startAtBeginning'];
+  if (startAtBeginning !== undefined && (startAtBeginning !== true || restore !== null))
+    throw invalid();
   if (restore !== null) {
     if (!record(restore) || typeof restore['id'] !== 'string' || !restore['id']) throw invalid();
     const position = restore['position'];

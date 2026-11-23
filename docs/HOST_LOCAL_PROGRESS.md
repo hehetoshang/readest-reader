@@ -14,6 +14,7 @@ The existing `moke_reader_claim` reply may include `localProgress` with these fi
 | `fileVersion` | Opaque host version bound to the exact opened resource |
 | `returnTarget` | `desktop-window` or `mobile-library`, fixed when the host creates the launch |
 | `restore` | `null` or the host-selected `{ id, position }` |
+| `startAtBeginning` | Optional literal `true`, paired with an explicit `restore: null` |
 
 The original canonical library base and book ID come from the base claim. The Reader uses account and file version to scope its local book configuration. Durable host storage and conditional eligibility are owned by Moke. The Reader sends the position alongside the original `launchId` and `claimToken` and leaves account, address, format, file version and conditional metadata out of every frame.
 
@@ -29,6 +30,17 @@ Reader retries only a typed, definite local write failure, at most twice with th
 ## Restore and return
 
 The Reader restores the EPUB CFI or section against the opened publication. It suppresses restore relocations as new reading positions and waits for initial font layout before acknowledging. A later turn or jump supersedes the initial generation and cancels its pending reanchor. Reader-side coalescing retains the generation of the original relocate through the render frame.
+
+Probe `hostLocalProgress.schema === 'moke.readest.host-local-progress.v1'` and
+`hostLocalProgress.startAtBeginning === true` in `contract/moke-reader.v1.json`,
+embedded in the Rust library as `readestlib::MOKE_READER_MANIFEST_JSON`. When the
+bound host session has verified an empty position for the opened EPUB, it can
+send `{ ...localProgress, restore: null, startAtBeginning: true }` on the native
+claim. The Reader initializes at the beginning even if a stored CFI is present.
+Automatic positioning produces no restore receipt or position write. A reading
+action can then advance progress normally. Omit the flag to use the existing
+restore or identity-scoped Reader-local fallback. The Reader rejects other flag
+values or a flag paired with a missing or non-null restore as `reader_invalid_launch`.
 
 An explicit close stops new navigation, flushes the final rendered frame and drains accepted writes. Desktop requests native window close after confirmation. The single-WebView mobile path asks the host to navigate to `/library` through the existing `moke_navigate` command after the same confirmation. The host must bind that navigation to its confirmed return lifecycle. A destroyed page cannot produce a successful receipt. Production mobile and native capability gates are part of the Moke integration.
 
